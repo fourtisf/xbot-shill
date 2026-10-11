@@ -75,6 +75,9 @@ const defaults = {
   sentAt: {}, // brand -> waktu aksi X 24 jam terakhir (batas per jam/hari per akun)
   replyLog: {}, // handle -> [timestamp komentar 24 jam terakhir]
   repliedTweets: [], // id tweet yang sudah dikomentari akun mana pun (anti dobel)
+  skippedTweets: [], // id tweet yang tidak bisa dibalas (balasan dibatasi / dihapus)
+  refills: {}, // handle -> [waktu pindah ke tweet lain] (maks. 3 per 24 jam)
+  brandDown: {}, // brand -> { at, reason }: akun dihentikan rem darurat, jalan lagi dengan /resume brand
   tplLog: {}, // handle / #brand -> template terakhir dipakai (anti komentar kembar)
   lastSeen: {}, // id channel -> id post terakhir yang sudah dibaca
   watchSinceId: {}, // brand -> id tweet terbaru yang sudah dibaca

@@ -44,7 +44,10 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 | Hanya tweet terbaru | Project punya 10+ tweet → hanya 3 tweet **terbaru** yang dikomentari, yang paling baru duluan (`/filter tweetsPerProject 3`), maks. 3 komentar/hari per project (`/auto maxRepliesPerProjectPerDay 3`) |
 | Jeda komentar | Komentar ke project yang sama minimal 5 menit sekali (`/jeda project 5`); project lain tetap jalan. Jeda antar semua aksi: `/jeda 5` atau acak `/jeda 3 6` |
 | Verifikasi opt-in | Project cukup pasang kode di bio; bot cek sendiri tiap 10 menit, kode kedaluwarsa setelah 3 hari |
-| Rate limit X (429) | Bot jeda sampai waktu reset dari X (termasuk batas 24 jam), lalu **jalan lagi sendiri** dan mengulang aksi yang gagal |
+| Rate limit X (429) | Akun itu jeda sampai waktu reset dari X (termasuk batas 24 jam), lalu **jalan lagi sendiri**; antrian dilanjutkan mulai dari tweet **terbaru** |
+| Tweet tidak bisa dibalas | Balasan dibatasi / tweet dihapus → akun yang **sama** pindah ke tweet terbaru lain dari project itu (maks. 3x/hari). Tweet "hanya akun yang di-mention" dilewati dari awal |
+| Project memblokir akun | Opt-in ke brand itu dihentikan otomatis — tidak dicoba lewat akun lain |
+| Rem darurat per akun | Akun ditolak X (key salah, dikunci, dibatasi) → akun itu **berhenti otomatis**, admin dikabari di channel laporan + DM; akun lain tetap jalan. Lanjut lagi: `/resume brand` |
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
 | Antrian tersimpan | Restart / VPS reboot tidak menghilangkan antrian |
 | Cek channel | Bot lapor kalau akun listener belum join channel target, dan lapor lagi begitu sudah join |
@@ -102,7 +105,7 @@ pm2 logs xagent                  # lihat log
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |
 | `/jeda` `/jeda 5` `/jeda 3 6` `/jeda project 10` | Jeda dalam menit: antar semua aksi (tetap / acak) dan antar komentar ke project yang sama |
 | `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, replyGapMin, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
-| `/pause` `/resume` `/status` | Kontrol bot |
+| `/pause` `/resume` `/resume brand` `/status` | Kontrol bot (`/resume dexvra` = jalankan lagi satu akun yang kena rem darurat) |
 
 ## Yang sengaja TIDAK diotomatisasi
 
@@ -111,7 +114,7 @@ Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
 - **Auto-like** — X melarang like otomatis
 - **Auto-follow massal** — tombol Follow di laporan sengaja manual
 - **Komentar / mention ke project yang belum opt-in** — reply otomatis hanya untuk project yang sudah setuju
-- **Beberapa akun untuk brand yang sama / akun bergantian** — X menganggapnya akun terkoordinasi untuk menghindari limit; tiap akun harus punya brand & tujuan sendiri
+- **Beberapa akun untuk brand yang sama / akun bergantian / akun cadangan yang menggantikan akun yang gagal** — X menganggapnya menghindari limit atau sanksi lewat banyak akun; tiap akun harus punya brand & tujuan sendiri
 
 ## Catatan
 

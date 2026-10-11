@@ -91,7 +91,7 @@ Object.assign(process.env, {
 // ---------- Helper ----------
 const sent = () => M.botCalls.filter((c) => c.method === 'sendMessage');
 const reports = () => sent().filter((c) => c.payload.chat_id === REPORT).map((c) => c.payload.text);
-const messagesTo = (id) => sent().filter((c) => c.payload.chat_id === id).map((c) => c.payload.text);
+const messagesTo = (id) => sent().filter((c) => String(c.payload.chat_id) === String(id)).map((c) => c.payload.text);
 const xcalls = (name) => M.x.calls.filter((c) => c[0] === name);
 const lookedUp = (h) => xcalls('userByUsername').filter((c) => c[1] === h).length;
 async function until(fn, label, ms = 5000) {
@@ -601,6 +601,124 @@ await test('/delaccount → akun dihapus, template & brand tetap', async () => {
   assert.ok(db.brands.dexvra.templates.length);
   assert.match(await dm(ADMIN, '/accounts'), /Dexvra<\/b> \(dexvra\)\nAkun X: ❌ belum ada akun/);
   assert.match(await dm(ADMIN, '/addaccount dexvra dk ds dt da'), /tersambung/);
+});
+
+// ---------- Keandalan: tweet berikutnya, rem darurat, antrian terbaru duluan ----------
+const xErr = (code, detail) => Object.assign(new Error(detail), { code, data: { detail } });
+
+await test('tweet yang balasannya dibatasi → akun yang sama pindah ke tweet berikutnya', async () => {
+  users.restrictproj = user('u30', 'RestrictProj', 'Restrict Project');
+  db.optins.restrictproj = { at: Date.now(), via: 'admin' };
+  const tw = tenTweets(600, 'restrict').slice(-3).reverse(); // [terbaru, ..]
+  M.x.timelines.u30 = tw;
+  db.filter.tweetsPerProject = 1;
+  M.x.failNext.reply = xErr(403, 'Reply to this conversation is not allowed because you have not been mentioned or otherwise engaged by the author of the post you are replying to.');
+  try {
+    post(alpha, 'x.com/RestrictProj');
+    await reportMatching('pindah ke tweet berikutnya');
+    const c = await until(() => xcalls('reply').find((c) => c[2] === tw[1].id && c[1].includes('Restrict')), 'reply tweet ke-2');
+    assert.equal(c.at(-1), 'k'); // akun yang sama, bukan akun lain
+    assert.ok(!db.brandDown.fourtis, 'bukan masalah akun');
+  } finally {
+    db.filter.tweetsPerProject = 3;
+  }
+});
+
+await test('tweet "hanya akun yang di-mention" dilewati dari awal, kecuali akun brand di-mention', async () => {
+  users.mentionproj = user('u31', 'MentionProj', 'Mention Project');
+  db.optins.mentionproj = { at: Date.now(), via: 'admin' };
+  const [a, b, c] = tenTweets(700, 'mention').slice(-3).reverse();
+  M.x.timelines.u31 = [
+    { ...a, reply_settings: 'mentionedUsers' },
+    { ...b, reply_settings: 'mentionedUsers', text: 'thanks @FourtisBot for the support' },
+    { ...c, reply_settings: 'everyone' }
+  ];
+  post(alpha, 'x.com/MentionProj');
+  await until(() => xcalls('reply').filter((r) => r[1].includes('Mention Project')).length === 2, '2 komentar MentionProj');
+  const ids = xcalls('reply').filter((r) => r[1].includes('Mention Project')).map((r) => r[2]);
+  assert.deepEqual(ids, [b.id, c.id]);
+});
+
+await test('project memblokir akun → opt-in brand itu dihentikan, tidak dicoba lewat akun lain', async () => {
+  users.blockproj = user('u32', 'BlockProj', 'Block Project');
+  db.optins.blockproj = { at: Date.now(), via: 'admin' };
+  M.x.timelines.u32 = tenTweets(800, 'block').reverse();
+  M.x.failNext.reply = xErr(403, 'You have been blocked from replying to this user.');
+  post(alpha, 'x.com/BlockProj');
+  await reportMatching('@BlockProj memblokir akun Fourtis');
+  await tick(5);
+  assert.equal(db.optins.blockproj, undefined);
+  assert.equal(xcalls('reply').filter((c) => c[1].includes('Block Project')).length, 1); // hanya percobaan yang gagal
+  assert.equal(db.queue.filter((j) => j.handle === 'blockproj').length, 0);
+});
+
+await test('error konten dobel tidak dihitung sebagai masalah akun', async () => {
+  users.dupcontent = user('u33', 'DupContent', 'Dup Content');
+  M.x.failNext.tweet = xErr(403, 'You are not allowed to create a Tweet with duplicate content.');
+  post(alpha, 'x.com/DupContent');
+  await reportMatching('duplicate content');
+  assert.ok(!db.brandDown.fourtis);
+});
+
+await test('rem darurat: akun dikunci → langsung berhenti, admin di-DM, akun lain tetap jalan, /resume brand', async () => {
+  users.lockproj = user('u34', 'LockProj', 'Lock Project');
+  users.stillrun = user('u35', 'StillRun', 'Still Run');
+  users.whiledown = user('u36', 'WhileDown', 'While Down');
+  M.x.failNext.tweet = xErr(403, 'Your account is temporarily locked.');
+  try {
+  post(gamma, 'x.com/LockProj'); // channel Dexvra
+  await until(() => db.brandDown.dexvra, 'Dexvra dihentikan');
+  await reportMatching('Akun Dexvra (@dexvra_x) dihentikan otomatis');
+  await until(() => messagesTo(ADMIN).some((m) => m.includes('dihentikan otomatis')), 'DM admin');
+  post(alpha, 'x.com/StillRun'); // Fourtis tetap jalan
+  const c = await until(() => xcalls('tweet').find((c) => c[1].includes('Still Run')), 'Fourtis jalan');
+  assert.equal(c.at(-1), 'k');
+  post(gamma, 'x.com/WhileDown');
+  await reportMatching('akun Dexvra (@dexvra_x) sedang dihentikan');
+  assert.equal(lookedUp('whiledown'), 0);
+  assert.match(await dm(ADMIN, '/status'), /Dexvra \(@dexvra_x\): 🛑 dihentikan/);
+  assert.match(await dm(ADMIN, '/accounts'), /🛑 dihentikan/);
+  assert.match(await dm(ADMIN, '/resume dexvra'), /Akun Dexvra jalan lagi/);
+  assert.ok(!db.brandDown.dexvra);
+  } finally {
+    delete db.brandDown.dexvra;
+  }
+});
+
+await test('rem darurat: error 403 biasa baru berhenti setelah 3x berturut-turut', async () => {
+  const err = () => xErr(403, 'You are not permitted to perform this action.');
+  for (const n of ['Pa', 'Pb', 'Pc']) users[`perm${n.toLowerCase()}`] = user(`u-${n}`, `Perm${n}`, `Perm ${n}`);
+  M.x.failNext.tweet = [err(), err(), err()];
+  try {
+  post(gamma, 'x.com/PermPa');
+  await until(() => xcalls('tweet').some((c) => c[1].includes('Perm Pa')), 'percobaan 1');
+  await tick(2);
+  assert.ok(!db.brandDown.dexvra, '1x gagal belum berhenti');
+  post(gamma, 'x.com/PermPb');
+  post(gamma, 'x.com/PermPc');
+  await until(() => db.brandDown.dexvra, 'berhenti setelah 3x');
+  } finally {
+    await dm(ADMIN, '/resume dexvra');
+  }
+});
+
+await test('setelah limit selesai: antrian dilanjutkan mulai dari yang terbaru', async () => {
+  for (const n of ['OldA', 'MidB', 'NewC']) users[n.toLowerCase()] = user(`u-${n}`, n, `Proj ${n}`);
+  db.limits.maxPerHour = 0; // tahan antrian
+  try {
+    for (const n of ['OldA', 'MidB', 'NewC']) {
+      post(alpha, `x.com/${n}`);
+      await until(() => db.queue.some((j) => j.handle === n.toLowerCase()), `${n} antre`);
+      await sleep(20);
+    }
+    db.pausedUntil.fourtis = Date.now() + 150; // seolah kena rate limit
+  } finally {
+    db.limits.maxPerHour = 1000;
+  }
+  await reportMatching('aksi antre dilanjutkan mulai dari yang terbaru');
+  await until(() => ['OldA', 'MidB', 'NewC'].every((n) => xcalls('tweet').some((c) => c[1].includes(`Proj ${n}`))), '3 tweet');
+  const order = xcalls('tweet').filter((c) => /Proj (OldA|MidB|NewC)/.test(c[1])).map((c) => c[1].match(/Proj (\w+)/)[1]);
+  assert.deepEqual(order, ['NewC', 'MidB', 'OldA']);
 });
 
 await test('/jeda: atur jeda dalam menit', async () => {

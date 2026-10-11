@@ -36,14 +36,16 @@ const brandLabel = (b) => `${brandName(b)}${db.brands[b]?.username ? ` (@${db.br
 const findBrand = (s) => (s && db.brands[s.toLowerCase()] ? s.toLowerCase() : null);
 const brandOf = (o) => findBrand(o?.brand) || db.defaultBrand; // brand opt-in / pending
 const activeBrands = () => Object.keys(db.brands).filter((b) => clients[b]);
-const readerBrand = () => (clients[db.defaultBrand] ? db.defaultBrand : activeBrands()[0]); // untuk baca data umum
+const isDown = (b) => !!db.brandDown[b]; // dihentikan rem darurat
+const readerBrand = () => [db.defaultBrand, ...activeBrands()].find((b) => clients[b] && !isDown(b)); // untuk baca data umum
 const channelBrand = (c) => findBrand(db.channelBrand[c]) || db.defaultBrand;
 async function accountStatus(b) {
   if (!clients[b]) return '❌ belum ada akun';
+  const down = isDown(b) ? ` · 🛑 dihentikan (${db.brandDown[b].reason}) — /resume ${b}` : '';
   try {
     const { data } = await clients[b].v2.me();
     db.brands[b].username = data.username;
-    return '✅ @' + data.username;
+    return '✅ @' + data.username + down;
   } catch (e) {
     return '❌ ' + (e?.data?.detail || e.message);
   }
@@ -68,6 +70,11 @@ async function report(html, buttons) {
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
 const lastErr = new Map();
+async function reportOnce(sig, html) { // pesan yang sama maks. 1x per jam
+  if (Date.now() - (lastErr.get(sig) || 0) < 3600_000) return;
+  lastErr.set(sig, Date.now());
+  await report(html);
+}
 function rateLimitUntil(e) {
   const rl = e?.rateLimit || {};
   const resets = [rl.reset];
@@ -75,11 +82,28 @@ function rateLimitUntil(e) {
   const reset = Math.max(0, ...resets.filter(Number.isFinite)) * 1000;
   return Math.max(reset ? reset + 5_000 : Date.now() + 15 * 60_000, Date.now() + TICK);
 }
-// Lapor error, kembalikan true kalau aksinya layak diulang
-async function xError(e, label, brand = db.defaultBrand) {
+// ---------- Rem darurat per akun ----------
+// Akun ditolak X (key salah, dikunci, dibatasi): berhenti sebelum makin parah, admin dikabari.
+// Langsung untuk 401 / dikunci / suspend; error 403 lain setelah 3x berturut-turut. Akun lain tetap jalan.
+const failStreak = {};
+const SEVERE = /suspend|locked|restrict|automated/i;
+async function accountProblem(brand, code, detail) {
+  failStreak[brand] = (failStreak[brand] || 0) + 1;
+  if (isDown(brand) || (code !== 401 && !SEVERE.test(detail) && failStreak[brand] < 3)) return;
+  db.brandDown[brand] = { at: Date.now(), reason: `${code} ${detail}`.slice(0, 200) }; save();
+  const msg = `🛑 <b>Akun ${esc(brandLabel(brand))} dihentikan otomatis</b>\nAlasan: ${esc(detail)}\n` +
+    `Akun lain tetap jalan; antrian akun ini disimpan.\nCek akun di X, lalu /resume ${brand}` +
+    (code === 401 ? ` (key berubah? /addaccount ${brand} ...)` : '');
+  await report(msg);
+  for (const id of ADMINS) await bot.telegram.sendMessage(id, msg, { parse_mode: 'HTML' }).catch(() => {});
+}
+
+// Lapor error, kembalikan true kalau aksinya layak diulang. brand hanya untuk error dari X API
+async function xError(e, label, brand) {
   const code = e?.code || e?.data?.status;
   stat('errors');
   if (code === 429) {
+    brand ||= db.defaultBrand;
     const until = rateLimitUntil(e);
     if (until > (db.pausedUntil[brand] || 0)) {
       db.pausedUntil[brand] = until; save();
@@ -88,11 +112,11 @@ async function xError(e, label, brand = db.defaultBrand) {
     return true;
   }
   const detail = e?.data?.detail || e?.message;
+  if (brand && (code === 401 || (code === 403 && !/duplicate/i.test(detail)))) await accountProblem(brand, code, detail);
   const sig = `${label}|${code}|${detail}`;
   if (Date.now() - (lastErr.get(sig) || 0) > 3600_000) { // error yang sama dilapor maks. 1x per jam
     lastErr.set(sig, Date.now());
     await report(`⚠️ <b>${esc(label)}</b> gagal (${esc(code ?? e?.requestError?.code ?? 'error')})\n${esc(detail)}`);
-    if (code === 401) await report(`❌ Key X ${esc(brandName(brand))} ditolak — perbarui dengan /addaccount ${brand} ...`);
   }
   return e?.type === 'request' || code >= 500; // jaringan putus / server X error
 }
@@ -140,17 +164,17 @@ const fmtGap = () => {
   return a === b ? fmtSec(a) : `${fmtSec(a)}–${fmtSec(b)} (acak)`;
 };
 function canAct(b) {
-  if (!clients[b] || limited(b) || Date.now() < (nextAt[b] || 0)) return false;
+  if (!clients[b] || isDown(b) || limited(b) || Date.now() < (nextAt[b] || 0)) return false;
   db.sentAt[b] = (db.sentAt[b] || []).filter((t) => t > Date.now() - DAY);
   return sentIn(b, 3600_000) < db.limits.maxPerHour && db.sentAt[b].length < db.limits.maxPerDay;
 }
-// Aksi berikutnya: akun yang sedang jeda/limit dan project yang masih dalam jeda dilewati
-// (yang lain tetap jalan); untuk project yang sama tweet terbaru dikomentari duluan
+// Aksi berikutnya: akun yang sedang jeda/limit/dihentikan dan project yang masih dalam jeda dilewati
+// (yang lain tetap jalan). Yang terbaru duluan — tweet terbaru project, juga setelah antrian menumpuk karena limit
 function nextJob() {
   const gap = db.auto.replyGapMin * 60_000;
-  const first = db.queue.find((j) => canAct(j.brand) && (j.type !== 'reply' || Date.now() - lastReply(j.handle) >= gap));
-  if (first?.type !== 'reply') return first;
-  return db.queue.filter((j) => j.type === 'reply' && j.handle === first.handle && j.brand === first.brand).sort(newestFirst)[0];
+  return db.queue
+    .filter((j) => canAct(j.brand) && (j.type !== 'reply' || Date.now() - lastReply(j.handle) >= gap))
+    .sort((a, b) => b.at - a.at || (a.tweetId && b.tweetId ? newestFirst(a, b) : 0))[0];
 }
 function enqueue(job) {
   if (job.type === 'reply' && (db.repliedTweets.includes(job.tweetId) || db.queue.some((j) => j.tweetId === job.tweetId))) return;
@@ -178,9 +202,12 @@ async function runQueue() {
     let acted = true, retry = false;
     try {
       acted = (await runJob(job)) !== false;
+      if (acted) failStreak[job.brand] = 0;
     } catch (e) {
       console.error('job error:', e);
-      retry = (await xError(e, jobLabel(job), job.brand)) && (job.tries = (job.tries || 0) + 1) < 3;
+      if (job.type === 'reply' && blockedByAuthor(e)) await stopProject(job, e);
+      else if (job.type === 'reply' && cannotReply(e)) await replaceTweet(job, e);
+      else retry = (await xError(e, jobLabel(job), job.brand)) && (job.tries = (job.tries || 0) + 1) < 3;
     }
     if (!retry && db.queue.includes(job)) db.queue.splice(db.queue.indexOf(job), 1);
     if (acted) {
@@ -198,6 +225,46 @@ async function dropProject(j, why) {
   db.queue = db.queue.filter((q) => !rest.includes(q));
   await report(`ℹ️ @${esc(j.username)} ${esc(why)} — ${rest.length + 1} tweet dilewati`);
   return false;
+}
+
+// ---------- Tweet yang tidak bisa dibalas (bukan masalah akun) ----------
+const errText = (e) => `${e?.data?.detail || ''} ${e?.data?.title || ''} ${e?.message || ''}`;
+const blockedByAuthor = (e) => e?.code === 403 && /blocked/i.test(errText(e));
+const cannotReply = (e) => [400, 403, 404].includes(e?.code) &&
+  /reply to this conversation is not allowed|not allowed to reply|deleted or not visible|not found/i.test(errText(e));
+const freshTweet = (t) => Date.now() - new Date(t.created_at) < db.filter.maxTweetAgeHours * 3600_000;
+// Balasan "hanya akun yang di-mention" tidak mungkin dibalas, kecuali akun brand ikut di-mention
+const canReplyTo = (t, brand) => t.reply_settings !== 'mentionedUsers' ||
+  !!db.brands[brand]?.username && t.text.toLowerCase().includes('@' + db.brands[brand].username.toLowerCase());
+
+// Project memblokir akun brand = tidak mau dikomentari lagi: opt-in brand itu dihentikan, tidak dicoba lewat akun lain
+async function stopProject(j, e) {
+  if (brandOf(db.optins[j.handle]) === j.brand) delete db.optins[j.handle];
+  db.queue = db.queue.filter((q) => !(q.type === 'reply' && q.handle === j.handle));
+  save();
+  await report(`🚫 @${esc(j.username)} memblokir akun ${esc(brandLabel(j.brand))} — opt-in dihentikan, komentar ke project ini berhenti.\n${esc(e?.data?.detail || e.message)}`);
+}
+
+// Balasan dibatasi / tweet dihapus: akun yang SAMA pindah ke tweet terbaru lain dari project itu (maks. 3x per 24 jam)
+async function replaceTweet(j, e) {
+  const why = esc(e?.data?.detail || e.message);
+  db.skippedTweets = [...db.skippedTweets.slice(-999), j.tweetId];
+  const tries = (db.refills[j.handle] || []).filter((t) => t > Date.now() - DAY);
+  save();
+  if (!j.userId || tries.length >= 3) return report(`ℹ️ Tweet @${esc(j.username)} tidak bisa dibalas (${why}) — dilewati`);
+  db.refills[j.handle] = [...tries, Date.now()];
+  try {
+    const tl = await clients[j.brand].v2.userTimeline(j.userId, {
+      max_results: 10, exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at', 'reply_settings']
+    });
+    const skip = new Set([...db.repliedTweets, ...db.skippedTweets, ...db.queue.map((q) => q.tweetId)]);
+    const next = (tl.tweets || []).filter((t) => !skip.has(t.id) && freshTweet(t) && canReplyTo(t, j.brand)).sort(newestFirst)[0];
+    if (!next) return report(`ℹ️ Tweet @${esc(j.username)} tidak bisa dibalas (${why}) dan tidak ada tweet lain yang bisa dikomentari`);
+    await report(`↪️ Tweet @${esc(j.username)} tidak bisa dibalas (${why}) — pindah ke tweet berikutnya`);
+    enqueue({ ...j, tweetId: next.id, tweetText: next.text, at: new Date(next.created_at).getTime(), tries: 0 });
+  } catch (err) {
+    await xError(err, `Cari tweet lain @${j.username}`, j.brand);
+  }
 }
 
 // Kembalikan false kalau aksi dilewati (tidak dihitung ke batas & tanpa jeda)
@@ -281,17 +348,18 @@ async function processProject(handle, channelName, t0, brand) {
     if (db.optins[handle]) {
       // Project opt-in -> komentar otomatis dari akun brand pilihan project
       const tl = await x.v2.userTimeline(user.id, {
-        max_results: Math.min(100, Math.max(5, f.tweetsPerProject)), exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at']
+        max_results: Math.min(100, Math.max(5, f.tweetsPerProject)), exclude: ['replies', 'retweets'],
+        'tweet.fields': ['created_at', 'reply_settings']
       });
       db.history[handle] = Date.now(); save(); // dicatat setelah timeline sukses, supaya bisa diulang kalau gagal
       const maxAge = f.maxTweetAgeHours * 3600_000;
       const tweets = (tl.tweets || [])
-        .filter((t) => Date.now() - new Date(t.created_at) < maxAge)
+        .filter((t) => Date.now() - new Date(t.created_at) < maxAge && canReplyTo(t, brand))
         .sort(newestFirst)
         .slice(0, f.tweetsPerProject); // hanya tweet terbaru
       if (!tweets.length) return report(`ℹ️ <b>@${esc(handle)}</b> (opt-in) tidak punya tweet baru ≤ ${f.maxTweetAgeHours} jam`);
       for (const tw of tweets) {
-        enqueue({ ...base, type: 'reply', tweetId: tw.id, tweetText: tw.text, at: new Date(tw.created_at).getTime(), t0 });
+        enqueue({ ...base, type: 'reply', userId: user.id, tweetId: tw.id, tweetText: tw.text, at: new Date(tw.created_at).getTime(), t0 });
       }
     } else {
       db.history[handle] = Date.now(); save();
@@ -309,6 +377,7 @@ async function processProject(handle, channelName, t0, brand) {
 async function processSafe(handle, channelName, t0, chBrand) {
   for (let tries = 0; tries < 3; tries++) {
     const brand = db.optins[handle] ? brandOf(db.optins[handle]) : chBrand;
+    if (isDown(brand)) return reportOnce(`down|${brand}`, `⏭ Project dilewati karena akun ${esc(brandLabel(brand))} sedang dihentikan (/resume ${brand})`);
     while (limited(brand)) await sleep(POLL);
     try {
       return await processProject(handle, channelName, t0, brand);
@@ -416,7 +485,7 @@ async function watchOptins() {
   if (!db.auto.watchOptins || db.paused) return;
   for (const brand of activeBrands()) {
     const handles = Object.keys(db.optins).filter((h) => brandOf(db.optins[h]) === brand);
-    if (!handles.length || limited(brand)) continue;
+    if (!handles.length || limited(brand) || isDown(brand)) continue;
     try {
       await watchBrand(brand, handles);
     } catch (e) {
@@ -444,7 +513,7 @@ async function watchBrand(brand, handles) {
   for (const query of queries) {
     const res = await clients[brand].v2.search(query, {
       max_results: 100,
-      'tweet.fields': ['created_at', 'author_id'],
+      'tweet.fields': ['created_at', 'author_id', 'reply_settings'],
       expansions: ['author_id'],
       'user.fields': ['username', 'name'],
       ...(since ? { since_id: since } : { start_time: new Date(Date.now() - db.auto.watchIntervalMin * 60_000).toISOString() })
@@ -456,7 +525,7 @@ async function watchBrand(brand, handles) {
       const u = users.get(tw.author_id);
       const at = new Date(tw.created_at).getTime();
       if (!u || brandOf(db.optins[u.username.toLowerCase()]) !== brand || !db.optins[u.username.toLowerCase()]) continue;
-      if (Date.now() - at > maxAge) continue;
+      if (Date.now() - at > maxAge || !canReplyTo(tw, brand)) continue;
       perProject.set(u, [...(perProject.get(u) || []), { ...tw, at }]);
     }
     // Project yang tweet banyak sekaligus: hanya tweetsPerProject tweet terbaru
@@ -464,7 +533,7 @@ async function watchBrand(brand, handles) {
       for (const tw of tweets.sort(newestFirst).slice(0, db.filter.tweetsPerProject)) {
         enqueue({
           type: 'reply', brand, handle: u.username.toLowerCase(), username: u.username, name: u.name, channel: '',
-          source: 'tweet baru (pantauan opt-in)', tweetId: tw.id, tweetText: tw.text, at: tw.at
+          source: 'tweet baru (pantauan opt-in)', userId: u.id, tweetId: tw.id, tweetText: tw.text, at: tw.at
         });
       }
     }
@@ -545,7 +614,9 @@ async function tick() {
   for (const [b, until] of Object.entries(db.pausedUntil)) {
     if (!until || Date.now() < until) continue;
     delete db.pausedUntil[b]; save();
-    await report(`▶️ Rate limit X akun ${esc(brandLabel(b))} selesai — jalan lagi otomatis.`);
+    const n = db.queue.filter((j) => j.brand === b).length;
+    await report(`▶️ Rate limit X akun ${esc(brandLabel(b))} selesai — jalan lagi otomatis` +
+      `${n ? `, ${n} aksi antre dilanjutkan mulai dari yang terbaru` : ''}.`);
     runQueue();
   }
   const tasks = [
@@ -595,7 +666,7 @@ const HELP = `<b>Fourtis X Agent</b>
 <b>Otomatis</b>
 /auto — lihat · /auto watchOptins false · /auto dailyReportHour 8
 
-/pause · /resume · /status
+/pause · /resume · /resume brand · /status
 
 <b>Untuk project</b>: /optin @handle [brand] (verifikasi otomatis, atau /verify @handle)`;
 
@@ -696,6 +767,7 @@ async function setAccount(ctx, brand, keys) {
   const isNew = !db.brands[brand];
   db.brands[brand] ||= newBrand(brand);
   Object.assign(db.brands[brand], { x: creds, username: me.username });
+  delete db.brandDown[brand]; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
     `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n(pesan berisi key sudah dihapus)` +
@@ -872,11 +944,20 @@ bot.command('jeda', (ctx) => {
 });
 
 bot.command('pause', (ctx) => { db.paused = true; save(); ctx.reply('⏸ Bot di-pause.'); });
-bot.command('resume', (ctx) => { db.paused = false; db.pausedUntil = {}; save(); ctx.reply('▶️ Bot jalan lagi.'); runQueue(); });
+bot.command('resume', (ctx) => {
+  const arg = ctx.message.text.split(/\s+/)[1];
+  const b = findBrand(arg);
+  if (arg && !b) return ctx.reply(`Brand "${arg}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
+  for (const k of b ? [b] : Object.keys(db.brands)) { delete db.brandDown[k]; delete db.pausedUntil[k]; failStreak[k] = 0; }
+  if (!b) db.paused = false;
+  save();
+  ctx.reply(b ? `▶️ Akun ${brandName(b)} jalan lagi.` : '▶️ Bot jalan lagi.');
+  runQueue();
+});
 bot.command('status', (ctx) => {
   const accounts = Object.keys(db.brands).map((b) => {
     if (!clients[b]) return `${esc(brandName(b))}: ❌ belum ada akun`;
-    const state = limited(b) ? `⏸ rate limit s/d ${fmtTime(db.pausedUntil[b])}` : '🟢';
+    const state = isDown(b) ? `🛑 dihentikan (/resume ${b})` : limited(b) ? `⏸ rate limit s/d ${fmtTime(db.pausedUntil[b])}` : '🟢';
     return `${esc(brandLabel(b))}: ${state} · 1 jam ${sentIn(b, 3600_000)}/${db.limits.maxPerHour} · 24 jam ${sentIn(b, DAY)}/${db.limits.maxPerDay}`;
   });
   return ctx.replyWithHTML(

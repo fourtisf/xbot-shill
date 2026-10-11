@@ -1,9 +1,13 @@
 // Mock twitter-api-v2. Bentuk respons mengikuti library asli (data / tweets / includes / meta)
 const M = globalThis.__mock;
 
+// failNext[name] = satu error, atau array error untuk beberapa panggilan berturut-turut
 function failIfQueued(name) {
-  const e = M.x.failNext[name];
-  if (e) { delete M.x.failNext[name]; throw e; }
+  const f = M.x.failNext[name];
+  if (!f) return;
+  const e = Array.isArray(f) ? f.shift() : f;
+  if (!Array.isArray(f) || !f.length) delete M.x.failNext[name];
+  throw e;
 }
 
 export class TwitterApi {
