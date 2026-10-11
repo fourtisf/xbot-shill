@@ -240,7 +240,8 @@ await test('Filter & Otomatis: preset dan tombol ON/OFF', async () => {
 
 await test('Akun X: hubungkan Dexvra lewat tombol, pesan berisi key langsung dihapus', async () => {
   const prompt = await tap(ADMIN, 'm:ask:keys:dexvra');
-  assert.match(prompt.text, /APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET/);
+  assert.match(prompt.text, /1\. API Key\n2\. API Key Secret\n3\. Access Token\n4\. Access Token Secret/);
+  assert.match(prompt.text, /Kirim sekarang: <b>1\. API Key<\/b>/);
   const dels = M.botCalls.filter((c) => c.method === 'deleteMessage').length;
   await dm(ADMIN, 'dk ds dt da');
   await until(() => db.brands.dexvra.x?.appKey === 'dk', 'akun Dexvra tersambung');
@@ -253,18 +254,54 @@ await test('Akun X: hubungkan Dexvra lewat tombol, pesan berisi key langsung dih
   assert.ok(db.brands.dexvra.x);
 });
 
+await test('Akun X: key dikirim SATU PER SATU — bot memandu 1/4 … 4/4, tiap pesan dihapus', async () => {
+  await tap(ADMIN, 'm:ask:keys:fourtis');
+  const dels = M.botCalls.filter((c) => c.method === 'deleteMessage').length;
+  assert.match(await dm(ADMIN, 'k'), /API Key diterima \(1\/4\)[\s\S]*Sekarang kirim: <b>2\. API Key Secret<\/b>/);
+  assert.match(await dm(ADMIN, 's'), /API Key Secret diterima \(2\/4\)[\s\S]*3\. Access Token/);
+  assert.match(await dm(ADMIN, 't'), /Access Token diterima \(3\/4\)[\s\S]*4\. Access Token Secret/);
+  await dm(ADMIN, 'a');
+  await until(() => messagesTo(ADMIN).some((m) => m.includes('Akun X Fourtis diganti: @fourtisbot')), 'akun Fourtis tersambung');
+  assert.ok(M.botCalls.filter((c) => c.method === 'deleteMessage').length - dels >= 4, 'keempat pesan kode dihapus');
+  assert.deepEqual(db.brands.fourtis.x, { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' });
+});
+
+await test('Akun X: key salah → petunjuk urutan & Read and write, key lama tetap dipakai', async () => {
+  await tap(ADMIN, 'm:ask:keys:dexvra');
+  await dm(ADMIN, 'bad b');
+  await dm(ADMIN, 'c d');
+  const r = messagesTo(ADMIN).find((m) => m.includes('Key tidak valid') && m.includes('Read and write'));
+  assert.ok(r, 'pesan petunjuk');
+  assert.match(r, /1\. API Key, 2\. API Key Secret, 3\. Access Token[\s\S]*Key lama tetap dipakai/);
+  assert.equal(db.brands.dexvra.x.appKey, 'dk');
+});
+
+await test('Brand baru lewat tombol: nama dulu, lalu 4 key', async () => {
+  await tap(ADMIN, 'm:ask:newbrand');
+  assert.match(await dm(ADMIN, 'Nama Salah!'), /huruf kecil\/angka/);
+  assert.match(await dm(ADMIN, 'dexvra'), /sudah ada/);
+  assert.match(await dm(ADMIN, 'nova'), /Hubungkan akun X Nova[\s\S]*1\. API Key/);
+  await dm(ADMIN, 'nk ns nt na');
+  await until(() => db.brands.nova?.x?.appKey === 'nk', 'brand Nova tersambung');
+  assert.equal(db.brands.nova.username, 'nova_x');
+  await dm(ADMIN, '/delaccount nova');
+  assert.equal(db.brands.nova.x, null);
+});
+
 await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', async () => {
   M.botChats['@gamma'] = { id: -1001003, type: 'channel', username: 'gamma', title: 'Gamma' };
   M.botAdminIn.push(-1001003);
   await tap(ADMIN, 'm:ask:channel');
   assert.match(await dm(ADMIN, 'bukan channel'), /Format salah/);
   await dm(ADMIN, '@gamma');
-  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma']);
+  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma', 'm:chadd:nova:@gamma']);
   let p = await tap(ADMIN, 'm:chadd:dexvra:@gamma');
   assert.ok(db.channels.includes('@gamma'));
   assert.equal(db.channelBrand['@gamma'], 'dexvra');
   assert.match(lastAnswer().text, /@gamma → Dexvra ditambahkan & sudah dipantau/);
   assert.match(p.text, /✅ @gamma → Dexvra/);
+  p = await tap(ADMIN, 'm:chb:@gamma');
+  assert.equal(db.channelBrand['@gamma'], 'nova');
   p = await tap(ADMIN, 'm:chb:@gamma');
   assert.equal(db.channelBrand['@gamma'], 'fourtis');
   p = await tap(ADMIN, 'm:chdel:@gamma');
@@ -273,7 +310,7 @@ await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', asy
 
 await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat tombol', async () => {
   let p = await tap(ADMIN, 'm:tplb');
-  assert.deepEqual(dataOf(p).slice(0, 2), ['m:tpl:fourtis', 'm:tpl:dexvra']);
+  assert.deepEqual(dataOf(p).slice(0, 3), ['m:tpl:fourtis', 'm:tpl:dexvra', 'm:tpl:nova']);
   p = await tap(ADMIN, 'm:tpl:dexvra');
   assert.match(p.text, /Template Dexvra/);
   await tap(ADMIN, 'm:ask:tpl:dexvra:t');
@@ -291,7 +328,7 @@ await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat to
 await test('Opt-in manual & hapus lewat tombol', async () => {
   await tap(ADMIN, 'm:ask:optin');
   await dm(ADMIN, '@PanelProj');
-  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:optadd:fourtis:panelproj', 'm:optadd:dexvra:panelproj']);
+  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:optadd:fourtis:panelproj', 'm:optadd:dexvra:panelproj', 'm:optadd:nova:panelproj']);
   await tap(ADMIN, 'm:optadd:dexvra:panelproj');
   assert.equal(db.optins.panelproj.brand, 'dexvra');
   await tap(ADMIN, 'm:ask:deloptin');

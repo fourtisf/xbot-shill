@@ -20,7 +20,7 @@ export class TwitterApi {
         async me() {
           call('me');
           if (creds.appKey === 'bad') throw Object.assign(new Error('Unauthorized'), { code: 401, data: { detail: 'Unauthorized' } });
-          return { data: { id: creds.appKey, username: { dk: 'dexvra_x' }[creds.appKey] || 'fourtisbot' } };
+          return { data: { id: creds.appKey, username: { dk: 'dexvra_x', nk: 'nova_x' }[creds.appKey] || 'fourtisbot' } };
         },
         async userByUsername(h) {
           call('userByUsername', h);

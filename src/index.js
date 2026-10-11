@@ -683,7 +683,7 @@ const HELP = `<b>Fourtis X Agent</b>
 Paling mudah: /menu — semua pengaturan pakai tombol
 
 <b>Akun X (1 akun per brand)</b>
-/addaccount brand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
+/addaccount brand API_KEY API_KEY_SECRET ACCESS_TOKEN ACCESS_TOKEN_SECRET
 /accounts — semua brand &amp; akun · /delaccount brand
 /setx ... — sama dengan /addaccount untuk brand utama
 
@@ -820,7 +820,7 @@ bot.on('text', (ctx, next) => {
 async function setAccount(ctx, brand, keys) {
   try { await ctx.deleteMessage(); } catch {}
   if (!brand || keys.length < 4 || keys.some((k) => !k)) {
-    return ctx.reply('Format: /addaccount brand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET\nContoh brand: fourtis, dexvra');
+    return ctx.reply('Format: /addaccount brand API_KEY API_KEY_SECRET ACCESS_TOKEN ACCESS_TOKEN_SECRET\nContoh brand: fourtis, dexvra\nLebih mudah: /menu → Akun X → Hubungkan akun');
   }
   if (!/^[a-z0-9_]{2,20}$/.test(brand)) return ctx.reply('Nama brand: huruf kecil/angka tanpa spasi, contoh: dexvra');
   const [appKey, appSecret, accessToken, accessSecret] = keys;
@@ -830,7 +830,9 @@ async function setAccount(ctx, brand, keys) {
   try {
     ({ data: me } = await new TwitterApi(creds).readWrite.v2.me());
   } catch (e) {
-    return ctx.reply('❌ Key tidak valid: ' + (e?.data?.detail || e.message) + (hadKeys ? '\nKey lama tetap dipakai.' : ''));
+    return ctx.reply('❌ Key tidak valid: ' + (e?.data?.detail || e.message) +
+      '\n\nCek: urutannya 1. API Key, 2. API Key Secret, 3. Access Token (diawali angka lalu "-"), 4. Access Token Secret; ' +
+      'dan Access Token dibuat SETELAH App permissions = Read and write.' + (hadKeys ? '\nKey lama tetap dipakai.' : ''));
   }
   // Satu akun X hanya untuk satu brand (dua brand di satu akun = konten dobel)
   const dup = Object.entries(db.brands).find(([b, v]) => b !== brand && v.x && v.username?.toLowerCase() === me.username.toLowerCase());
@@ -871,7 +873,7 @@ bot.command(['accounts', 'xstatus'], async (ctx) => {
       ` · Tweet bot: ${v.ownTweetEnabled ? 'ON' : 'OFF'}`;
   }));
   save();
-  ctx.replyWithHTML(lines.join('\n\n') + '\n\nTambah/ganti akun: /addaccount brand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET');
+  ctx.replyWithHTML(lines.join('\n\n') + '\n\nTambah/ganti akun: /menu → Akun X (atau /addaccount brand API_KEY API_KEY_SECRET ACCESS_TOKEN ACCESS_TOKEN_SECRET)');
 });
 
 // ---------- Channel ----------
@@ -1212,11 +1214,17 @@ const SETTABLE = {
 };
 const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel };
 
+const KEY_STEPS = ['API Key', 'API Key Secret', 'Access Token', 'Access Token Secret'];
 const PROMPTS = {
-  keys: (b) => `🔑 Kirim 4 key X untuk <b>${esc(brandName(b))}</b> dalam satu pesan, dipisah spasi:\n` +
-    '<code>APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET</code>\n\nPesan Anda langsung dihapus setelah dibaca. /batal untuk batal.',
-  newbrand: () => '➕ Kirim nama brand baru + 4 key X, dipisah spasi:\n<code>namabrand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET</code>\n\n' +
-    'Pesan Anda langsung dihapus. /batal untuk batal.',
+  keys: (b) => `🔑 <b>Hubungkan akun X ${esc(db.brands[b]?.name || newBrand(b).name)}</b>\n\n` +
+    'Buka developer.x.com (login sebagai akun X brand ini) → app Anda → tab <b>Keys and tokens</b>.\n' +
+    'Bot minta 4 kode, satu per satu:\n' + KEY_STEPS.map((k, i) => `${i + 1}. ${k}`).join('\n') +
+    '\n(Bearer Token, Client ID, Client Secret tidak dipakai.)\n\n' +
+    '⚠️ Access Token harus dibuat SETELAH App permissions diubah ke <b>Read and write</b>.\n\n' +
+    `👉 Kirim sekarang: <b>1. ${KEY_STEPS[0]}</b>\n` +
+    '(Boleh juga keempatnya sekaligus dalam satu pesan, dipisah spasi, urut 1–4.)\n\nPesan berisi kode langsung dihapus. /batal untuk batal.',
+  newbrand: () => '➕ <b>Brand baru</b>\n\nKirim nama brand: huruf kecil/angka tanpa spasi, contoh <code>nova</code>.\n' +
+    'Setelah itu bot minta 4 kode akun X-nya satu per satu. /batal untuk batal.',
   channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau ID <code>-100…</code>\n' +
     `${LISTENER ? 'Akun listener harus sudah join channel itu.' : 'Jadikan bot admin di channel itu dulu.'} /batal untuk batal.`,
   tpl: (b, f) => `📝 Kirim teks template ${f === 'k' ? 'komentar' : 'tweet bot'} untuk <b>${esc(brandName(b))}</b>.\n` +
@@ -1248,13 +1256,23 @@ async function handleInput(ctx, a) {
   const again = (msg) => { awaiting.set(ctx.from.id, { ...a, at: Date.now() }); return ctx.reply(msg); };
   const brands = Object.keys(db.brands);
   switch (a.kind) {
-    case 'keys':
-      await setAccount(ctx, a.brand, text.split(/\s+/));
+    case 'keys': {
+      // Satu per satu (atau beberapa sekaligus); setiap pesan berisi kode langsung dihapus
+      try { await ctx.deleteMessage(); } catch {}
+      const got = [...(a.got || []), ...text.split(/\s+/).filter(Boolean)];
+      if (got.length < 4) {
+        awaiting.set(ctx.from.id, { ...a, got, at: Date.now() });
+        return ctx.replyWithHTML(`✅ ${KEY_STEPS[got.length - 1]} diterima (${got.length}/4).\n👉 Sekarang kirim: <b>${got.length + 1}. ${KEY_STEPS[got.length]}</b>`);
+      }
+      await setAccount(ctx, a.brand, got.slice(0, 4));
       return showPanel(ctx, accountsPanel(), false);
+    }
     case 'newbrand': {
-      const [b, ...keys] = text.split(/\s+/);
-      await setAccount(ctx, b.toLowerCase(), keys);
-      return showPanel(ctx, accountsPanel(), false);
+      const b = text.toLowerCase();
+      if (!/^[a-z0-9_]{2,20}$/.test(b)) return again('Nama brand: huruf kecil/angka tanpa spasi, contoh: nova. Kirim lagi, atau /batal');
+      if (db.brands[b]) return again(`Brand "${b}" sudah ada. Pakai tombol Hubungkan/Ganti akun di panel, atau kirim nama lain.`);
+      awaiting.set(ctx.from.id, { kind: 'keys', brand: b, at: Date.now() });
+      return ctx.replyWithHTML(PROMPTS.keys(b));
     }
     case 'channel': {
       const c = text.split(/\s+/)[0].toLowerCase();
