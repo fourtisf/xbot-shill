@@ -2,3 +2,5 @@ node_modules/
 # Rahasia: TG_SESSION = akses penuh akun Telegram, data.json = key X API
 .env
 data.json
+backups/
+data.json.tmp

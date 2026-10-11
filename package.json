@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "login": "node scripts/login.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node test/e2e.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
