@@ -390,9 +390,13 @@ async function processSafe(handle, channelName, t0, chBrand) {
 }
 
 // ---------- Listener channel Telegram ----------
+// Tanpa TG_API_ID/TG_API_HASH/TG_SESSION: mode bot saja — bot membaca post dari channel tempat dia jadi admin.
+// Dengan ketiganya: akun Telegram biasa (listener) membaca channel orang lain yang sudah di-join.
+const LISTENER = !!(process.env.TG_API_ID && process.env.TG_API_HASH && process.env.TG_SESSION);
+const NOT_READ = LISTENER ? 'belum join' : 'bot belum admin';
 let tg = null;
 let tgDown = false;
-let missing = []; // channel di db.channels yang belum di-join akun listener
+let missing = []; // channel di db.channels yang belum bisa dibaca
 const targets = new Map(); // channel di db.channels -> entity Telegram
 const chanKeys = (chat) => [
   chat.username && '@' + chat.username.toLowerCase(),
@@ -410,6 +414,21 @@ function onChannelPost(msg, chat, t0, ch) {
   const urls = (msg.entities || []).map((e) => e.url).filter(Boolean);
   for (const h of extractHandles(msg.message || '', urls)) processSafe(h, chat.title || chat.username, t0, channelBrand(ch));
   return true;
+}
+
+// Mode bot saja: post channel datang lewat Bot API. Post yang masuk saat bot mati disimpan Telegram
+// sampai 24 jam, jadi tetap diproses saat bot hidup lagi (maks. catchUpMaxAgeHours)
+function botChannelPost(post) {
+  const ch = matchChannel(post.chat);
+  if (!ch) return;
+  const at = post.date * 1000;
+  const key = String(post.chat.id);
+  if (Date.now() - at > db.auto.catchUpMaxAgeHours * 3600_000) {
+    db.lastSeen[key] = Math.max(db.lastSeen[key] || 0, post.message_id); save();
+    return;
+  }
+  const msg = { id: post.message_id, message: post.text || post.caption || '', entities: post.entities || post.caption_entities };
+  onChannelPost(msg, post.chat, Date.now() - at > 60_000 ? at : Date.now(), ch);
 }
 
 async function startListener() {
@@ -434,20 +453,31 @@ async function startListener() {
   console.log('Listener Telegram aktif');
 }
 
-// Cocokkan db.channels dengan channel yang sudah di-join akun listener
+// Cocokkan db.channels dengan channel yang bisa dibaca: di-join akun listener, atau bot jadi admin (mode bot saja)
 async function refreshChannels() {
   const before = new Set(targets.keys());
   targets.clear();
-  for (const d of await tg.getDialogs({})) {
-    if (!d.isChannel || !d.entity) continue;
-    for (const c of db.channels) if (chanKeys(d.entity).includes(c.toLowerCase())) targets.set(c, d.entity);
-  }
-  // Channel baru dipantau mulai dari post terakhir, post lama tidak diproses
-  for (const e of targets.values()) {
-    const key = String(e.id);
-    if (db.lastSeen[key]) continue;
-    const [last] = await tg.getMessages(e, { limit: 1 });
-    db.lastSeen[key] = last?.id || 0;
+  if (LISTENER) {
+    for (const d of await tg.getDialogs({})) {
+      if (!d.isChannel || !d.entity) continue;
+      for (const c of db.channels) if (chanKeys(d.entity).includes(c.toLowerCase())) targets.set(c, d.entity);
+    }
+    // Channel baru dipantau mulai dari post terakhir, post lama tidak diproses
+    for (const e of targets.values()) {
+      const key = String(e.id);
+      if (db.lastSeen[key]) continue;
+      const [last] = await tg.getMessages(e, { limit: 1 });
+      db.lastSeen[key] = last?.id || 0;
+    }
+  } else {
+    bot.botInfo ??= await bot.telegram.getMe();
+    for (const c of db.channels) {
+      try {
+        const chat = await bot.telegram.getChat(c);
+        const m = await bot.telegram.getChatMember(chat.id, bot.botInfo.id);
+        if (['administrator', 'creator'].includes(m.status)) targets.set(c, chat);
+      } catch {} // channel tidak ada / bot bukan anggota
+    }
   }
   save();
   missing = db.channels.filter((c) => !targets.has(c));
@@ -456,6 +486,7 @@ async function refreshChannels() {
 
 // Ambil post yang terlewat (bot mati, koneksi putus) + sambung ulang listener
 async function catchUp() {
+  if (!LISTENER) return; // mode bot saja: Telegram sendiri yang mengirim ulang post yang tertunda
   try {
     if (!tg.connected) await tg.connect();
     const minDate = Date.now() / 1000 - db.auto.catchUpMaxAgeHours * 3600;
@@ -599,7 +630,7 @@ async function dailyTasks() {
     `📊 <b>Ringkasan harian</b>\nKomentar terkirim: ${s.replies || 0}\nTweet bot: ${s.tweets || 0}\n` +
     `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n\n` +
     `<b>Akun X</b>\n${perBrand.join('\n')}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
-    `${missing.length ? ` (belum join: ${esc(missing.join(', '))})` : ''}\n` +
+    `${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
     `Opt-in aktif: ${Object.keys(db.optins).length}\nAntrian: ${db.queue.length}\nBackup: ${esc(file)}`
   );
   db.stats = {}; save();
@@ -625,7 +656,7 @@ async function tick() {
     [every(db.auto.verifyIntervalMin), autoVerify, 'Verifikasi opt-in otomatis'],
     [every(targets.size < db.channels.length ? 30 : 360), async () => {
       const joined = await refreshChannels();
-      if (joined.length) await report(`✅ Listener sudah join ${esc(joined.join(', '))} — mulai dipantau`);
+      if (joined.length) await report(`✅ ${LISTENER ? 'Listener sudah join' : 'Bot sudah admin di'} ${esc(joined.join(', '))} — mulai dipantau`);
     }, 'Cek channel'],
     [true, dailyTasks, 'Ringkasan harian']
   ];
@@ -813,7 +844,9 @@ bot.command('addchannel', async (ctx) => {
   const brand = brandName(channelBrand(key));
   ctx.reply(targets.has(key)
     ? `✅ ${c} → ${brand} ditambahkan & sudah dipantau.`
-    : `⚠️ ${c} → ${brand} ditambahkan, tapi akun listener BELUM join channel ini. Join dulu — bot cek ulang otomatis tiap 30 menit.`);
+    : LISTENER
+      ? `⚠️ ${c} → ${brand} ditambahkan, tapi akun listener BELUM join channel ini. Join dulu — bot cek ulang otomatis tiap 30 menit.`
+      : `⚠️ ${c} → ${brand} ditambahkan, tapi bot BELUM jadi admin di channel ini. Jadikan bot admin dulu — bot cek ulang otomatis tiap 30 menit.`);
 });
 bot.command('delchannel', (ctx) => {
   const c = (ctx.message.text.split(/\s+/)[1] || '').toLowerCase();
@@ -822,7 +855,7 @@ bot.command('delchannel', (ctx) => {
   save(); ctx.reply('Dihapus.');
 });
 bot.command('channels', (ctx) => ctx.reply(db.channels.length
-  ? db.channels.map((c) => `${targets.has(c) ? '✅' : '⚠️ belum join'} ${c} → ${brandName(channelBrand(c))}`).join('\n')
+  ? db.channels.map((c) => `${targets.has(c) ? '✅' : `⚠️ ${NOT_READ}`} ${c} → ${brandName(channelBrand(c))}`).join('\n')
   : 'Belum ada channel.'));
 
 bot.command('setreport', (ctx) => {
@@ -838,6 +871,7 @@ bot.on('channel_post', async (ctx, next) => {
     db.reportChat = ctx.chat.id; save();
     return ctx.reply('📊 Channel laporan aktif.');
   }
+  if (!LISTENER) botChannelPost(ctx.channelPost);
   return next();
 });
 
@@ -961,8 +995,9 @@ bot.command('status', (ctx) => {
     return `${esc(brandLabel(b))}: ${state} · 1 jam ${sentIn(b, 3600_000)}/${db.limits.maxPerHour} · 24 jam ${sentIn(b, DAY)}/${db.limits.maxPerDay}`;
   });
   return ctx.replyWithHTML(
-    `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\nListener Telegram: ${tg?.connected ? '✅' : '❌'}\n` +
-    `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (belum join: ${esc(missing.join(', '))})` : ''}\n` +
+    `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\n` +
+    (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (bot harus admin di channel target)\n') +
+    `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
     `Channel laporan: ${db.reportChat ? '✅' : '❌'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
     `Opt-in: ${Object.keys(db.optins).length} (menunggu verifikasi: ${Object.keys(db.pending).length})\n` +
     `Pantau tweet opt-in: ${db.auto.watchOptins ? 'ON' : 'OFF'}\nAntrian: ${db.queue.length}\n` +
@@ -975,16 +1010,21 @@ bot.command('status', (ctx) => {
 bot.catch((e) => console.error('bot error:', e));
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 // Konfigurasi salah: keluar dengan pesan jelas (jangan tampak "online" di pm2 padahal mati)
-const missingEnv = ['BOT_TOKEN', 'ADMIN_IDS', 'TG_API_ID', 'TG_API_HASH', 'TG_SESSION'].filter((k) => !process.env[k]);
+const missingEnv = ['BOT_TOKEN', 'ADMIN_IDS'].filter((k) => !process.env[k]);
 if (missingEnv.length) {
-  console.error(`❌ .env belum lengkap: ${missingEnv.join(', ')} kosong. Isi .env (lihat .env.example), TG_SESSION dari: npm run login`);
+  console.error(`❌ .env belum lengkap: ${missingEnv.join(', ')} kosong. Isi .env (lihat .env.example)`);
   process.exit(1);
 }
-try {
-  await startListener();
-} catch (e) {
-  console.error('❌ Listener Telegram gagal start:', e.message);
-  process.exit(1);
+if (LISTENER) {
+  try {
+    await startListener();
+  } catch (e) {
+    console.error('❌ Listener Telegram gagal start:', e.message);
+    process.exit(1);
+  }
+} else {
+  console.log('Mode bot saja: post dibaca dari channel tempat bot jadi admin');
+  if (process.env.TG_API_ID || process.env.TG_API_HASH) console.log('(TG_API_* terisi tapi TG_SESSION kosong — jalankan npm run login untuk mode listener)');
 }
 await refreshChannels().catch((e) => console.error('refreshChannels:', e));
 await catchUp();
@@ -994,8 +1034,8 @@ bot.launch().catch((e) => {
 });
 console.log('Bot Telegram aktif');
 await report(
-  `🟢 <b>Bot online</b>\n<b>Akun X</b>\n${esc(await accountsReport())}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
-  `${missing.length ? `\n⚠️ Akun listener belum join: ${esc(missing.join(', '))}` : ''}` +
+  `🟢 <b>Bot online</b>${LISTENER ? '' : ' · mode bot saja'}\n<b>Akun X</b>\n${esc(await accountsReport())}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
+  `${missing.length ? `\n⚠️ ${LISTENER ? 'Akun listener belum join' : 'Bot belum jadi admin di'}: ${esc(missing.join(', '))}` : ''}` +
   `\nOpt-in: ${Object.keys(db.optins).length}\nAntrian dilanjutkan: ${db.queue.length}` +
   `${db.paused ? '\n⏸ Masih di-pause manual (/resume)' : ''}`
 );

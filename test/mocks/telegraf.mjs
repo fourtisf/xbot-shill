@@ -10,6 +10,13 @@ Telegram.prototype.callApi = async function (method, payload = {}) {
       return { id: 999, is_bot: true, first_name: 'Fourtis', username: 'fourtisbot' };
     case 'getChatAdministrators':
       return (M.chatAdmins[payload.chat_id] || []).map((id) => ({ status: 'administrator', user: { id, is_bot: false, first_name: 'a' } }));
+    case 'getChat': {
+      const chat = (M.botChats || {})[payload.chat_id];
+      if (!chat) throw Object.assign(new Error('400: Bad Request: chat not found'), { code: 400 });
+      return chat;
+    }
+    case 'getChatMember':
+      return { status: (M.botAdminIn || []).includes(payload.chat_id) ? 'administrator' : 'left', user: { id: payload.user_id } };
     case 'sendMessage':
       return { message_id: M.botCalls.length, date: 0, chat: { id: payload.chat_id }, text: payload.text };
     default:

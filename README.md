@@ -57,8 +57,8 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 
 ## Yang dibutuhkan (sekali saja, tidak bisa diotomatisasi)
 
-1. **Bot Telegram** — buat di @BotFather, ambil token
-2. **Akun Telegram listener** — akun biasa yang sudah join semua channel target. API ID/HASH dari https://my.telegram.org
+1. **Bot Telegram** — buat di @BotFather, ambil token. **Jadikan bot admin di setiap channel target** (cukup ini — `.env` hanya butuh `BOT_TOKEN` + `ADMIN_IDS`)
+2. *(Opsional)* **Akun Telegram listener** — hanya kalau mau memantau channel **orang lain** yang tidak bisa Anda jadikan bot admin: isi `TG_API_ID`/`TG_API_HASH` dari https://my.telegram.org lalu `npm run login`
 3. **Akun X bot** — buat app di https://developer.x.com (izin *Read and Write*), ambil 4 key. Aktifkan label *Automated* di pengaturan akun X
 4. Server/VPS dengan Node.js 18+
 
@@ -66,8 +66,8 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 
 ```bash
 npm install
-cp .env.example .env      # isi BOT_TOKEN, ADMIN_IDS, TG_API_ID, TG_API_HASH, TZ
-npm run login             # login akun listener, TG_SESSION otomatis tersimpan ke .env
+cp .env.example .env      # isi BOT_TOKEN dan ADMIN_IDS (TG_API_* boleh kosong)
+# npm run login           # opsional, hanya untuk mode listener (channel orang lain)
 npm test                  # opsional: test end-to-end (tanpa akun asli)
 
 npm install -g pm2
@@ -80,7 +80,7 @@ pm2 logs xagent                  # lihat log
 ## Setup di Telegram (sekali saja)
 
 1. DM bot: `/addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET` lalu `/addaccount dexvra ...` (pesan otomatis dihapus)
-2. `/addchannel @channeltarget fourtis` atau `... dexvra` (ulangi untuk tiap channel — bot langsung bilang kalau akun listener belum join)
+2. Jadikan bot admin di channel target, lalu `/addchannel @channeltarget fourtis` atau `... dexvra` (ulangi untuk tiap channel — bot langsung bilang kalau belum bisa membaca channel itu)
 3. Buat channel laporan, jadikan bot admin, lalu posting `/setreport` di channel itu (akun di `ADMIN_IDS` harus admin channel tersebut)
 4. Ganti template contoh: `/tpls` untuk lihat, `/addtpl dexvra ...`, `/addtweet fourtis ...`, `/deltpl dexvra 1`
 5. `/status` dan `/accounts` untuk cek semua sudah ✅
