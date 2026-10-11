@@ -39,7 +39,8 @@ async function report(html, buttons) {
 const RESERVED = new Set(['i', 'home', 'search', 'intent', 'share', 'hashtag', 'explore', 'settings']);
 function extractHandles(text, urls) {
   const all = [text, ...urls].join(' ');
-  const re = /(?:twitter\.com|x\.com)\/(?:#!\/)?([A-Za-z0-9_]{1,15})/gi;
+  // Lookbehind: jangan cocokkan domain lain yang berakhiran x.com (okx.com, coinex.com, phemex.com)
+  const re = /(?<![\w.-])(?:(?:www|mobile)\.)?(?:twitter|x|fxtwitter|vxtwitter|fixupx|fixvx)\.com\/(?:#!\/)?([A-Za-z0-9_]{1,15})/gi;
   const out = new Set();
   let m;
   while ((m = re.exec(all))) if (!RESERVED.has(m[1].toLowerCase())) out.add(m[1].toLowerCase());
@@ -308,8 +309,11 @@ bot.command('setreport', (ctx) => {
   db.reportChat = arg || ctx.chat.id; save();
   bot.telegram.sendMessage(db.reportChat, '📊 Channel laporan aktif.').catch((e) => console.error(e.message));
 });
-bot.on('channel_post', (ctx, next) => {
+bot.on('channel_post', async (ctx, next) => {
   if (ctx.channelPost.text?.startsWith('/setreport')) {
+    // Post channel tidak membawa pengirim: pastikan salah satu ADMIN_IDS adalah admin channel ini
+    const admins = await ctx.getChatAdministrators().catch(() => []);
+    if (!admins.some((a) => ADMINS.includes(String(a.user.id)))) return;
     db.reportChat = ctx.chat.id; save();
     return ctx.reply('📊 Channel laporan aktif.');
   }
