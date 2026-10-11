@@ -80,12 +80,29 @@ async function dm(from, text) {
       message_id: updateId, date: unix(Date.now()), text,
       chat: { id: from, type: 'private', first_name: 'u' },
       from: { id: from, is_bot: false, first_name: 'u' },
-      entities: [{ type: 'bot_command', offset: 0, length: cmd.length }]
+      entities: cmd.startsWith('/') ? [{ type: 'bot_command', offset: 0, length: cmd.length }] : []
     }
   });
   await sleep(30);
   return messagesTo(from).at(-1);
 }
+// Klik tombol panel; kembalikan panel terakhir (pesan baru atau hasil edit) untuk chat itu
+async function tap(from, data) {
+  await M.bot.handleUpdate({
+    update_id: updateId++,
+    callback_query: {
+      id: String(updateId), from: { id: from, is_bot: false, first_name: 'u' }, chat_instance: '1', data,
+      message: { message_id: 7, date: unix(Date.now()), chat: { id: from, type: 'private', first_name: 'u' }, text: 'panel' }
+    }
+  });
+  await sleep(60);
+  return lastPanel(from);
+}
+const lastPanel = (id) => M.botCalls.filter((c) => ['sendMessage', 'editMessageText'].includes(c.method) &&
+  String(c.payload.chat_id) === String(id)).at(-1)?.payload;
+const buttonsOf = (p) => (p?.reply_markup?.inline_keyboard || []).flat();
+const dataOf = (p) => buttonsOf(p).map((b) => b.callback_data);
+const lastAnswer = () => M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1)?.payload;
 
 register('./mocks/hooks.mjs', import.meta.url);
 await import('../src/index.js');
@@ -160,6 +177,146 @@ await test('/status menampilkan mode bot saja', async () => {
   assert.match(s, /Mode: bot saja/);
   assert.doesNotMatch(s, /Listener Telegram/);
   assert.equal(db.channels.length, 2);
+});
+
+// ---------- Menu "/" dan panel tombol ----------
+await test('menu "/" terdaftar: publik untuk project, lengkap untuk admin', async () => {
+  const calls = M.botCalls.filter((c) => c.method === 'setMyCommands');
+  const pub = calls.find((c) => !c.payload.scope);
+  const adm = calls.find((c) => c.payload.scope?.chat_id === ADMIN);
+  assert.deepEqual(pub.payload.commands.map((c) => c.command), ['optin', 'verify', 'optout']);
+  assert.ok(adm.payload.commands.some((c) => c.command === 'menu'));
+  assert.ok(adm.payload.commands.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command) && c.description.length >= 3));
+});
+
+await test('/start dari admin → panel tombol (dan menu admin dipasang ulang)', async () => {
+  const before = M.botCalls.filter((c) => c.method === 'setMyCommands').length;
+  await dm(ADMIN, '/start');
+  const p = lastPanel(ADMIN);
+  assert.match(p.text, /Panel pengaturan/);
+  for (const d of ['m:status', 'm:acc', 'm:ch', 'm:tplb', 'm:opt', 'm:lim', 'm:flt', 'm:auto', 'm:pause', 'm:help']) assert.ok(dataOf(p).includes(d), d);
+  assert.ok(M.botCalls.filter((c) => c.method === 'setMyCommands').length > before);
+  assert.match(await dm(222, '/start'), /optin/); // bukan admin: sapaan biasa, tanpa panel
+});
+
+await test('Jeda & Batas: klik preset langsung mengubah nilai', async () => {
+  let p = await tap(ADMIN, 'm:lim');
+  assert.match(p.text, /Jeda & Batas/);
+  p = await tap(ADMIN, 'm:set:limits.maxPerHour:30');
+  assert.equal(db.limits.maxPerHour, 30);
+  assert.ok(buttonsOf(p).some((b) => b.text === '✅30'));
+  p = await tap(ADMIN, 'm:gap:180:360');
+  assert.deepEqual([db.limits.minDelaySec, db.limits.maxDelaySec], [180, 360]);
+  assert.match(p.text, /3 menit–6 menit/);
+  await tap(ADMIN, 'm:set:auto.replyGapMin:10');
+  await tap(ADMIN, 'm:set:filter.tweetsPerProject:2');
+  assert.deepEqual([db.auto.replyGapMin, db.filter.tweetsPerProject], [10, 2]);
+  Object.assign(db.limits, { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000 });
+});
+
+await test('tombol palsu / nilai di luar daftar ditolak', async () => {
+  const before = JSON.stringify(db);
+  await tap(ADMIN, 'm:set:reportChat:123');
+  await tap(ADMIN, 'm:set:limits.maxPerHour:abc');
+  await tap(ADMIN, 'm:gap:1:2');
+  await tap(ADMIN, 'm:tog:paused');
+  assert.equal(JSON.stringify(db), before);
+});
+
+await test('Filter & Otomatis: preset dan tombol ON/OFF', async () => {
+  await tap(ADMIN, 'm:flt');
+  await tap(ADMIN, 'm:set:filter.minFollowers:1000');
+  assert.equal(db.filter.minFollowers, 1000);
+  await tap(ADMIN, 'm:ask:blacklist');
+  await dm(ADMIN, 'scam, rug, presale');
+  assert.deepEqual(db.filter.blacklist, ['scam', 'rug', 'presale']);
+  let p = await tap(ADMIN, 'm:tog:auto.watchOptins');
+  assert.equal(db.auto.watchOptins, false);
+  assert.ok(buttonsOf(p).some((b) => b.text === 'Pantau tweet opt-in: ❌ OFF'));
+  await tap(ADMIN, 'm:tog:auto.watchOptins');
+  assert.equal(db.auto.watchOptins, true);
+  db.filter.minFollowers = 500;
+});
+
+await test('Akun X: hubungkan Dexvra lewat tombol, pesan berisi key langsung dihapus', async () => {
+  const prompt = await tap(ADMIN, 'm:ask:keys:dexvra');
+  assert.match(prompt.text, /APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET/);
+  const dels = M.botCalls.filter((c) => c.method === 'deleteMessage').length;
+  await dm(ADMIN, 'dk ds dt da');
+  await until(() => db.brands.dexvra.x?.appKey === 'dk', 'akun Dexvra tersambung');
+  assert.ok(M.botCalls.filter((c) => c.method === 'deleteMessage').length > dels);
+  await until(() => lastPanel(ADMIN)?.text?.includes('Akun X'), 'panel akun');
+  assert.match(lastPanel(ADMIN).text, /Dexvra<\/b>: ✅ @dexvra_x/);
+  const conf = await tap(ADMIN, 'm:accdel:dexvra');
+  assert.match(conf.text, /Yakin lepas akun X/);
+  await tap(ADMIN, 'm:acc'); // batal
+  assert.ok(db.brands.dexvra.x);
+});
+
+await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', async () => {
+  M.botChats['@gamma'] = { id: -1001003, type: 'channel', username: 'gamma', title: 'Gamma' };
+  M.botAdminIn.push(-1001003);
+  await tap(ADMIN, 'm:ask:channel');
+  assert.match(await dm(ADMIN, 'bukan channel'), /Format salah/);
+  await dm(ADMIN, '@gamma');
+  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma']);
+  let p = await tap(ADMIN, 'm:chadd:dexvra:@gamma');
+  assert.ok(db.channels.includes('@gamma'));
+  assert.equal(db.channelBrand['@gamma'], 'dexvra');
+  assert.match(lastAnswer().text, /@gamma → Dexvra ditambahkan & sudah dipantau/);
+  assert.match(p.text, /✅ @gamma → Dexvra/);
+  p = await tap(ADMIN, 'm:chb:@gamma');
+  assert.equal(db.channelBrand['@gamma'], 'fourtis');
+  p = await tap(ADMIN, 'm:chdel:@gamma');
+  assert.ok(!db.channels.includes('@gamma'));
+});
+
+await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat tombol', async () => {
+  let p = await tap(ADMIN, 'm:tplb');
+  assert.deepEqual(dataOf(p).slice(0, 2), ['m:tpl:fourtis', 'm:tpl:dexvra']);
+  p = await tap(ADMIN, 'm:tpl:dexvra');
+  assert.match(p.text, /Template Dexvra/);
+  await tap(ADMIN, 'm:ask:tpl:dexvra:t');
+  await dm(ADMIN, '🚀 Baru: {name}\nx.com/{handle}');
+  const list = db.brands.dexvra.tweetTemplates;
+  assert.equal(list.at(-1), '🚀 Baru: {name}\nx.com/{handle}');
+  p = await tap(ADMIN, `m:tdel:dexvra:t:${list.length}`);
+  assert.ok(!db.brands.dexvra.tweetTemplates.includes('🚀 Baru: {name}\nx.com/{handle}'));
+  await tap(ADMIN, 'm:twtog:dexvra');
+  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
+  await tap(ADMIN, 'm:twtog:dexvra');
+  assert.equal(db.brands.dexvra.ownTweetEnabled, true);
+});
+
+await test('Opt-in manual & hapus lewat tombol', async () => {
+  await tap(ADMIN, 'm:ask:optin');
+  await dm(ADMIN, '@PanelProj');
+  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:optadd:fourtis:panelproj', 'm:optadd:dexvra:panelproj']);
+  await tap(ADMIN, 'm:optadd:dexvra:panelproj');
+  assert.equal(db.optins.panelproj.brand, 'dexvra');
+  await tap(ADMIN, 'm:ask:deloptin');
+  await dm(ADMIN, '@panelproj');
+  assert.equal(db.optins.panelproj, undefined);
+});
+
+await test('/batal membatalkan input yang sedang ditunggu', async () => {
+  await tap(ADMIN, 'm:ask:channel');
+  assert.match(await dm(ADMIN, '/batal'), /Dibatalkan/);
+  await dm(ADMIN, '@delta');
+  assert.ok(!db.channels.includes('@delta'));
+});
+
+await test('Pause / jalankan lagi dari panel; bukan admin tidak bisa pakai panel', async () => {
+  await tap(ADMIN, 'm:pause');
+  assert.equal(db.paused, true);
+  await tap(ADMIN, 'm:resume');
+  assert.equal(db.paused, false);
+  await tap(222, 'm:pause');
+  assert.equal(db.paused, false);
+  assert.equal(lastAnswer().text, 'Khusus admin');
+  await tap(222, 'm:ask:channel');
+  await dm(222, '@sneaky');
+  assert.ok(!db.channels.includes('@sneaky'));
 });
 
 await test('BOT_TOKEN kosong → berhenti dengan pesan jelas (TG API tidak diminta)', async () => {

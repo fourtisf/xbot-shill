@@ -91,6 +91,13 @@ pm2 logs xagent                  # lihat log
 - **Manual admin** (mis. project yang beli paket listing): `/addoptin @handle [brand]`
 - Project bisa berhenti kapan saja: `/optout @handle` (komentar yang masih antre ikut dibatalkan)
 
+## Panel tombol
+
+Ketik **/menu** (atau /start) di DM bot: semua pengaturan pakai tombol — akun X per brand, channel, template,
+opt-in, jeda & batas, filter, fitur otomatis, pause/jalankan. Untuk isian (key X, channel, template) bot
+menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perintah (project hanya melihat
+/optin, /verify, /optout).
+
 ## Perintah admin
 
 | Perintah | Fungsi |

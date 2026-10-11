@@ -669,6 +669,7 @@ async function tick() {
 
 // ---------- Perintah bot ----------
 const HELP = `<b>Fourtis X Agent</b>
+Paling mudah: /menu — semua pengaturan pakai tombol
 
 <b>Akun X (1 akun per brand)</b>
 /addaccount brand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
@@ -702,7 +703,10 @@ const HELP = `<b>Fourtis X Agent</b>
 <b>Untuk project</b>: /optin @handle [brand] (verifikasi otomatis, atau /verify @handle)`;
 
 bot.start((ctx) => {
-  if (isAdmin(ctx)) return ctx.replyWithHTML(HELP);
+  if (isAdmin(ctx)) {
+    setAdminCommands(ctx.chat.id);
+    return showPanel(ctx, homePanel(), false);
+  }
   const names = activeBrands().map(brandName).join(' / ') || 'kami';
   return ctx.reply(`Hi! Mau tweet project kamu otomatis di-boost oleh ${names}?\nKetik /optin @handle_x_project_kamu`);
 });
@@ -776,6 +780,15 @@ bot.use((ctx, next) => {
   return next();
 });
 
+// Panel: bot sedang menunggu balasan teks dari admin (key X, channel, template, ...). Perintah apa pun membatalkannya
+bot.on('text', (ctx, next) => {
+  const a = ctx.chat?.type === 'private' && awaiting.get(ctx.from.id);
+  if (!a) return next();
+  awaiting.delete(ctx.from.id);
+  if (ctx.message.text.startsWith('/') || Date.now() - a.at > 10 * 60_000) return next();
+  return handleInput(ctx, a);
+});
+
 // ---------- Akun X per brand ----------
 async function setAccount(ctx, brand, keys) {
   try { await ctx.deleteMessage(); } catch {}
@@ -811,13 +824,16 @@ bot.command('addaccount', (ctx) => {
   return setAccount(ctx, brand?.toLowerCase(), keys);
 });
 bot.command('setx', (ctx) => setAccount(ctx, db.defaultBrand, ctx.message.text.split(/\s+/).slice(1)));
+function delAccount(b) {
+  Object.assign(db.brands[b], { x: null, username: null });
+  initClients(); save();
+  runQueue();
+  return `Akun X ${brandName(b)} dihapus. Template & opt-in brand ini tetap disimpan; tambah akun lagi dengan /addaccount ${b} ...`;
+}
 bot.command('delaccount', (ctx) => {
   const b = findBrand(ctx.message.text.split(/\s+/)[1]);
   if (!b || !db.brands[b].x) return ctx.reply('Format: /delaccount brand (lihat /accounts)');
-  Object.assign(db.brands[b], { x: null, username: null });
-  initClients(); save();
-  ctx.reply(`Akun X ${brandName(b)} dihapus. Template & opt-in brand ini tetap disimpan; tambah akun lagi dengan /addaccount ${b} ...`);
-  runQueue();
+  ctx.reply(delAccount(b));
 });
 bot.command(['accounts', 'xstatus'], async (ctx) => {
   const lines = await Promise.all(Object.entries(db.brands).map(async ([b, v]) => {
@@ -832,27 +848,33 @@ bot.command(['accounts', 'xstatus'], async (ctx) => {
 });
 
 // ---------- Channel ----------
+async function addChannel(c, b) {
+  const key = c.toLowerCase();
+  if (!db.channels.includes(key)) db.channels.push(key);
+  if (b) db.channelBrand[key] = b;
+  save();
+  await refreshChannels().catch((e) => console.error('refreshChannels:', e));
+  const brand = brandName(channelBrand(key));
+  return targets.has(key)
+    ? `✅ ${c} → ${brand} ditambahkan & sudah dipantau.`
+    : LISTENER
+      ? `⚠️ ${c} → ${brand} ditambahkan, tapi akun listener BELUM join channel ini. Join dulu — bot cek ulang otomatis tiap 30 menit.`
+      : `⚠️ ${c} → ${brand} ditambahkan, tapi bot BELUM jadi admin di channel ini. Jadikan bot admin dulu — bot cek ulang otomatis tiap 30 menit.`;
+}
+function delChannel(c) {
+  db.channels = db.channels.filter((x) => x !== c); delete db.channelBrand[c];
+  targets.delete(c); missing = missing.filter((m) => m !== c);
+  save();
+}
 bot.command('addchannel', async (ctx) => {
   const [, c, b] = ctx.message.text.split(/\s+/);
   if (!c) return ctx.reply('Format: /addchannel @channel [brand]  (atau -100xxxxxxxx)');
   if (b && !findBrand(b)) return ctx.reply(`Brand "${b}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
-  const key = c.toLowerCase();
-  if (!db.channels.includes(key)) db.channels.push(key);
-  if (b) db.channelBrand[key] = findBrand(b);
-  save();
-  await refreshChannels().catch((e) => console.error('refreshChannels:', e));
-  const brand = brandName(channelBrand(key));
-  ctx.reply(targets.has(key)
-    ? `✅ ${c} → ${brand} ditambahkan & sudah dipantau.`
-    : LISTENER
-      ? `⚠️ ${c} → ${brand} ditambahkan, tapi akun listener BELUM join channel ini. Join dulu — bot cek ulang otomatis tiap 30 menit.`
-      : `⚠️ ${c} → ${brand} ditambahkan, tapi bot BELUM jadi admin di channel ini. Jadikan bot admin dulu — bot cek ulang otomatis tiap 30 menit.`);
+  ctx.reply(await addChannel(c, findBrand(b)));
 });
 bot.command('delchannel', (ctx) => {
-  const c = (ctx.message.text.split(/\s+/)[1] || '').toLowerCase();
-  db.channels = db.channels.filter((x) => x !== c); delete db.channelBrand[c];
-  targets.delete(c); missing = missing.filter((m) => m !== c);
-  save(); ctx.reply('Dihapus.');
+  delChannel((ctx.message.text.split(/\s+/)[1] || '').toLowerCase());
+  ctx.reply('Dihapus.');
 });
 bot.command('channels', (ctx) => ctx.reply(db.channels.length
   ? db.channels.map((c) => `${targets.has(c) ? '✅' : `⚠️ ${NOT_READ}`} ${c} → ${brandName(channelBrand(c))}`).join('\n')
@@ -883,23 +905,29 @@ function brandAndText(ctx, cmd) {
   const b = m && findBrand(m[1]);
   return b ? [b, m[2].trim()] : [db.defaultBrand, rest.trim()];
 }
-function addTemplate(ctx, cmd, field, label) {
+function tplAdd(b, field, t) {
+  db.brands[b][field].push(t); save();
+  return `✅ Template ${field === 'templates' ? 'komentar' : 'tweet'} ${brandName(b)} #${db.brands[b][field].length}:\n${t}`;
+}
+function tplDel(b, field, n) {
+  const list = db.brands[b]?.[field];
+  if (!list?.[n - 1]) return `Nomor tidak ada. Lihat /tpls ${b}`;
+  if (list.length === 1) return 'Minimal harus ada 1 template.';
+  list.splice(n - 1, 1); save();
+  return `Dihapus dari ${brandName(b)}.`;
+}
+function addTemplate(ctx, cmd, field) {
   const [b, t] = brandAndText(ctx, cmd);
   if (!t) return ctx.reply(`Format: /${cmd} [brand] teks dengan {name}`);
-  db.brands[b][field].push(t); save();
-  ctx.reply(`✅ Template ${label} ${brandName(b)} #${db.brands[b][field].length}:\n${t}`);
+  ctx.reply(tplAdd(b, field, t));
 }
 function delTemplate(ctx, cmd, field) {
   const [b, t] = brandAndText(ctx, cmd);
-  const list = db.brands[b][field];
-  const n = Number(t);
-  if (!list[n - 1]) return ctx.reply(`Nomor tidak ada. Lihat /tpls ${b}`);
-  if (list.length === 1) return ctx.reply('Minimal harus ada 1 template.');
-  list.splice(n - 1, 1); save(); ctx.reply(`Dihapus dari ${brandName(b)}.`);
+  ctx.reply(tplDel(b, field, Number(t)));
 }
-bot.command('addtpl', (ctx) => addTemplate(ctx, 'addtpl', 'templates', 'komentar'));
+bot.command('addtpl', (ctx) => addTemplate(ctx, 'addtpl', 'templates'));
 bot.command('deltpl', (ctx) => delTemplate(ctx, 'deltpl', 'templates'));
-bot.command('addtweet', (ctx) => addTemplate(ctx, 'addtweet', 'tweetTemplates', 'tweet'));
+bot.command('addtweet', (ctx) => addTemplate(ctx, 'addtweet', 'tweetTemplates'));
 bot.command('deltweet', (ctx) => delTemplate(ctx, 'deltweet', 'tweetTemplates'));
 bot.command('tpls', (ctx) => {
   const b = findBrand(ctx.message.text.split(/\s+/)[1]);
@@ -932,10 +960,13 @@ bot.command('addoptin', (ctx) => {
   if (!h) return ctx.reply('Format: /addoptin @handle [brand] — hanya untuk project yang sudah setuju (mis. paket listing)');
   if (!validHandle(norm(h))) return ctx.reply('Handle X tidak valid.');
   if (b && !findBrand(b)) return ctx.reply(`Brand "${b}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
-  const brand = findBrand(b) || db.defaultBrand;
-  db.optins[norm(h)] = { at: Date.now(), via: 'admin', brand }; stat('optins', brand);
-  ctx.reply(`✅ @${norm(h)} opt-in ke ${brandName(brand)}.`);
+  ctx.reply(addOptinManual(h, findBrand(b) || db.defaultBrand));
 });
+function addOptinManual(h, brand) {
+  const handle = norm(h);
+  db.optins[handle] = { at: Date.now(), via: 'admin', brand }; stat('optins', brand);
+  return `✅ @${handle} opt-in ke ${brandName(brand)}.`;
+}
 bot.command('deloptin', (ctx) => {
   delete db.optins[norm(ctx.message.text.split(/\s+/)[1] || '')]; save(); ctx.reply('Dihapus.');
 });
@@ -982,19 +1013,23 @@ bot.command('resume', (ctx) => {
   const arg = ctx.message.text.split(/\s+/)[1];
   const b = findBrand(arg);
   if (arg && !b) return ctx.reply(`Brand "${arg}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
+  ctx.reply(resume(b));
+});
+function resume(b) {
   for (const k of b ? [b] : Object.keys(db.brands)) { delete db.brandDown[k]; delete db.pausedUntil[k]; failStreak[k] = 0; }
   if (!b) db.paused = false;
   save();
-  ctx.reply(b ? `▶️ Akun ${brandName(b)} jalan lagi.` : '▶️ Bot jalan lagi.');
   runQueue();
-});
-bot.command('status', (ctx) => {
+  return b ? `▶️ Akun ${brandName(b)} jalan lagi.` : '▶️ Bot jalan lagi.';
+}
+bot.command('status', (ctx) => ctx.replyWithHTML(statusText()));
+function statusText() {
   const accounts = Object.keys(db.brands).map((b) => {
     if (!clients[b]) return `${esc(brandName(b))}: ❌ belum ada akun`;
     const state = isDown(b) ? `🛑 dihentikan (/resume ${b})` : limited(b) ? `⏸ rate limit s/d ${fmtTime(db.pausedUntil[b])}` : '🟢';
     return `${esc(brandLabel(b))}: ${state} · 1 jam ${sentIn(b, 3600_000)}/${db.limits.maxPerHour} · 24 jam ${sentIn(b, DAY)}/${db.limits.maxPerDay}`;
   });
-  return ctx.replyWithHTML(
+  return (
     `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\n` +
     (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (bot harus admin di channel target)\n') +
     `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
@@ -1004,7 +1039,351 @@ bot.command('status', (ctx) => {
     `Komentar per project: ${db.filter.tweetsPerProject} tweet terbaru, maks. ${db.auto.maxRepliesPerProjectPerDay}/hari\n` +
     `Jeda: ${fmtGap()} antar aksi · ${db.auto.replyGapMin} menit per project`
   );
+}
+
+// ---------- Panel tombol (/menu): semua pengaturan tanpa hafal perintah ----------
+const btn = (text, data) => Markup.button.callback(text, data);
+const HOME = [btn('⬅️ Menu utama', 'm:home')];
+const FIELD = { k: 'templates', t: 'tweetTemplates' };
+const awaiting = new Map(); // admin -> { kind, brand, field, at }: bot menunggu balasan teks
+const accIcon = (b) => (!clients[b] ? '❌' : isDown(b) ? '🛑' : limited(b) ? '⏸' : '✅');
+const chunk = (a, n) => a.reduce((r, x, i) => (i % n ? r[r.length - 1].push(x) : r.push([x]), r), []);
+
+// Satu baris pilihan: label + nilai preset; nilai yang aktif diberi ✅
+function optionRow(label, path, values, fmt = String) {
+  const [o, k] = path.split('.');
+  return [btn(label, 'm:noop'), ...values.map((v) => btn(`${db[o][k] === v ? '✅' : ''}${fmt(v)}`, `m:set:${path}:${v}`))];
+}
+
+function homePanel() {
+  const acc = Object.keys(db.brands).map((b) => `${esc(brandName(b))} ${accIcon(b)}`).join(' · ');
+  return {
+    text: `⚙️ <b>Panel pengaturan</b>\n\nStatus: ${db.paused ? '⏸ pause' : '🟢 jalan'}${LISTENER ? '' : ' · mode bot saja'}\n` +
+      `Akun X: ${acc}\nChannel: ${targets.size}/${db.channels.length} terpantau · Opt-in: ${Object.keys(db.optins).length} · Antrian: ${db.queue.length}` +
+      (db.reportChat ? '' : '\n⚠️ Channel laporan belum diatur — posting /setreport di channel laporan') + '\n\nPilih menu:',
+    rows: [
+      [btn('📊 Status', 'm:status'), btn('👤 Akun X', 'm:acc')],
+      [btn('📢 Channel', 'm:ch'), btn('📝 Template', 'm:tplb')],
+      [btn('🤝 Opt-in', 'm:opt'), btn('⏱ Jeda & Batas', 'm:lim')],
+      [btn('🔎 Filter', 'm:flt'), btn('🤖 Otomatis', 'm:auto')],
+      [db.paused ? btn('▶️ Jalankan lagi', 'm:resume') : btn('⏸ Pause semua', 'm:pause'), btn('❓ Bantuan', 'm:help')]
+    ]
+  };
+}
+function accountsPanel(checked = {}) {
+  const lines = Object.entries(db.brands).map(([b, v]) => {
+    const st = checked[b] || (!clients[b] ? '❌ belum ada akun'
+      : `${accIcon(b)} @${v.username || '?'}${isDown(b) ? ' · dihentikan' : limited(b) ? ' · rate limit' : ''}`);
+    const chs = db.channels.filter((c) => channelBrand(c) === b).length;
+    const ops = Object.values(db.optins).filter((o) => brandOf(o) === b).length;
+    return `<b>${esc(v.name)}</b>: ${esc(st)}\n   channel ${chs} · opt-in ${ops}`;
+  });
+  const rows = Object.entries(db.brands).map(([b, v]) => [
+    btn(`${v.x ? '🔑 Ganti' : '➕ Hubungkan'} akun ${v.name}`, `m:ask:keys:${b}`),
+    ...(isDown(b) || limited(b) ? [btn('▶️ Jalankan', `m:accres:${b}`)] : []),
+    ...(v.x ? [btn('🗑', `m:accdel:${b}`)] : [])
+  ]);
+  rows.push([btn('➕ Brand baru', 'm:ask:newbrand'), btn('🔄 Cek akun', 'm:acccek')], HOME);
+  return { text: `👤 <b>Akun X</b> (1 akun per brand)\n\n${lines.join('\n\n')}`, rows };
+}
+function channelsPanel() {
+  const lines = db.channels.map((c) => `${targets.has(c) ? '✅' : '⚠️'} ${esc(c)} → ${esc(brandName(channelBrand(c)))}${targets.has(c) ? '' : ` (${NOT_READ})`}`);
+  const rows = db.channels.slice(0, 20).map((c) => [btn(`🔁 ${c}: ${brandName(channelBrand(c))}`, `m:chb:${c}`), btn('🗑', `m:chdel:${c}`)]);
+  rows.push([btn('➕ Tambah channel', 'm:ask:channel'), btn('🔄 Cek ulang', 'm:chref')], HOME);
+  return {
+    text: `📢 <b>Channel target</b>\n${LISTENER ? 'Akun listener harus join channel.' : 'Bot harus jadi admin di channel.'} Tombol 🔁 = ganti brand.\n\n` +
+      (lines.join('\n') || 'Belum ada channel.'),
+    rows
+  };
+}
+function tplBrandPanel() {
+  return { text: '📝 <b>Template</b> — pilih brand:', rows: [Object.entries(db.brands).map(([b, v]) => btn(v.name, `m:tpl:${b}`)), HOME] };
+}
+function tplPanel(b) {
+  const v = db.brands[b];
+  const list = (l) => l.map((t, i) => `${i + 1}. ${esc(t.length > 120 ? t.slice(0, 120) + '…' : t)}`).join('\n');
+  const delRows = (l, f) => chunk(l.map((_, i) => btn(`🗑 ${f.toUpperCase()}${i + 1}`, `m:tdel:${b}:${f}:${i + 1}`)), 5);
+  return {
+    text: `📝 <b>Template ${esc(v.name)}</b>\nVariabel: {name} {handle} {channel}\n\n<b>K = Komentar</b> (project opt-in):\n${list(v.templates)}\n\n` +
+      `<b>T = Tweet bot</b> (project belum opt-in, ${v.ownTweetEnabled ? 'ON' : 'OFF'}):\n${list(v.tweetTemplates)}`,
+    rows: [
+      [btn('➕ Komentar', `m:ask:tpl:${b}:k`), btn('➕ Tweet', `m:ask:tpl:${b}:t`)],
+      ...delRows(v.templates, 'k'), ...delRows(v.tweetTemplates, 't'),
+      [btn(`Tweet bot: ${v.ownTweetEnabled ? '✅ ON' : '❌ OFF'}`, `m:twtog:${b}`)],
+      [btn('⬅️ Pilih brand', 'm:tplb'), ...HOME]
+    ]
+  };
+}
+function optPanel() {
+  const list = Object.entries(db.optins);
+  const lines = list.slice(0, 30).map(([h, o]) => `@${esc(h)} → ${esc(brandName(brandOf(o)))}`);
+  return {
+    text: `🤝 <b>Opt-in</b> (${list.length})\n${lines.join('\n') || 'Belum ada.'}${list.length > 30 ? `\n… +${list.length - 30} lagi (/optins)` : ''}\n\n` +
+      `Menunggu verifikasi bio: ${Object.keys(db.pending).length}\nProject daftar sendiri dengan /optin @handle di bot ini.`,
+    rows: [[btn('➕ Opt-in manual', 'm:ask:optin'), btn('🗑 Hapus opt-in', 'm:ask:deloptin')], HOME]
+  };
+}
+const GAPS = [[30, 90], [60, 180], [180, 360], [300, 600]];
+function limPanel() {
+  const { minDelaySec: lo, maxDelaySec: hi } = db.limits;
+  return {
+    text: `⏱ <b>Jeda & Batas</b> (berlaku per akun X)\n\nJeda antar aksi: ${fmtGap()}\nJeda komentar ke project yang sama: ${db.auto.replyGapMin} menit\n` +
+      `Tweet terbaru yang dikomentari: ${db.filter.tweetsPerProject}\nMaks. komentar per project/hari: ${db.auto.maxRepliesPerProjectPerDay}\n` +
+      `Maks. aksi per jam: ${db.limits.maxPerHour} · per hari: ${db.limits.maxPerDay}\n\nNilai lain: /jeda 2 4 · /limits maxPerHour 15`,
+    rows: [
+      [btn('Jeda aksi', 'm:noop'), ...GAPS.map(([a, b]) =>
+        btn(`${lo === a && hi === b ? '✅' : ''}${a < 60 ? `${a}-${b}d` : `${a / 60}-${b / 60}m`}`, `m:gap:${a}:${b}`))],
+      optionRow('Per project', 'auto.replyGapMin', [2, 5, 10, 30], (v) => `${v}m`),
+      optionRow('Tweet baru', 'filter.tweetsPerProject', [1, 2, 3, 5]),
+      optionRow('Komen/hari', 'auto.maxRepliesPerProjectPerDay', [1, 2, 3, 5]),
+      optionRow('Aksi/jam', 'limits.maxPerHour', [10, 20, 30, 50]),
+      optionRow('Aksi/hari', 'limits.maxPerDay', [30, 50, 100, 200]),
+      HOME
+    ]
+  };
+}
+function fltPanel() {
+  const f = db.filter;
+  return {
+    text: `🔎 <b>Filter project</b>\n\nMin. followers: ${f.minFollowers}\nMin. umur akun: ${f.minAgeDays} hari\nCooldown per project: ${f.cooldownDays} hari\n` +
+      `Umur tweet maks.: ${f.maxTweetAgeHours} jam\nKata terlarang: ${esc(f.blacklist.join(', ') || '-')}`,
+    rows: [
+      optionRow('Followers', 'filter.minFollowers', [100, 500, 1000, 5000], (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`)),
+      optionRow('Umur akun', 'filter.minAgeDays', [0, 7, 14, 30], (v) => `${v} hr`),
+      optionRow('Cooldown', 'filter.cooldownDays', [1, 3, 7, 14], (v) => `${v} hr`),
+      optionRow('Tweet maks', 'filter.maxTweetAgeHours', [12, 24, 48, 72], (v) => `${v} j`),
+      [btn('✏️ Ubah kata terlarang', 'm:ask:blacklist')],
+      HOME
+    ]
+  };
+}
+function autoPanel() {
+  const a = db.auto;
+  return {
+    text: `🤖 <b>Otomatis</b>\n\nPantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'} (tiap ${a.watchIntervalMin} menit)\n` +
+      `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00`,
+    rows: [
+      [btn(`Pantau tweet opt-in: ${a.watchOptins ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.watchOptins')],
+      optionRow('Tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], (v) => `${v}m`),
+      [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
+      optionRow('Ringkasan', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
+      HOME
+    ]
+  };
+}
+// Hanya nilai ini yang bisa diubah lewat tombol (+ panel yang ditampilkan ulang)
+const SETTABLE = {
+  'limits.maxPerHour': limPanel, 'limits.maxPerDay': limPanel, 'auto.replyGapMin': limPanel,
+  'filter.tweetsPerProject': limPanel, 'auto.maxRepliesPerProjectPerDay': limPanel,
+  'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
+  'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel
+};
+const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel };
+
+const PROMPTS = {
+  keys: (b) => `🔑 Kirim 4 key X untuk <b>${esc(brandName(b))}</b> dalam satu pesan, dipisah spasi:\n` +
+    '<code>APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET</code>\n\nPesan Anda langsung dihapus setelah dibaca. /batal untuk batal.',
+  newbrand: () => '➕ Kirim nama brand baru + 4 key X, dipisah spasi:\n<code>namabrand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET</code>\n\n' +
+    'Pesan Anda langsung dihapus. /batal untuk batal.',
+  channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau ID <code>-100…</code>\n' +
+    `${LISTENER ? 'Akun listener harus sudah join channel itu.' : 'Jadikan bot admin di channel itu dulu.'} /batal untuk batal.`,
+  tpl: (b, f) => `📝 Kirim teks template ${f === 'k' ? 'komentar' : 'tweet bot'} untuk <b>${esc(brandName(b))}</b>.\n` +
+    'Variabel: <code>{name}</code> nama project, <code>{handle}</code> username X, <code>{channel}</code> nama channel.\n' +
+    `Contoh: <code>${f === 'k' ? 'Love seeing {name} keep shipping 🚀' : '🚀 New project: {name}\nx.com/{handle}'}</code>\n/batal untuk batal.`,
+  optin: () => '🤝 Kirim @handle X project yang sudah setuju (mis. beli paket listing). /batal untuk batal.',
+  deloptin: () => '🗑 Kirim @handle project yang opt-in-nya mau dihapus. /batal untuk batal.',
+  blacklist: () => '✏️ Kirim kata terlarang dipisah koma, contoh: <code>scam, rug, presale</code>\nKirim <code>-</code> untuk mengosongkan. /batal untuk batal.'
+};
+
+async function showPanel(ctx, { text, rows }, edit = true) {
+  const extra = { parse_mode: 'HTML', disable_web_page_preview: true, ...Markup.inlineKeyboard(rows) };
+  if (edit && ctx.callbackQuery) {
+    try {
+      return await ctx.editMessageText(text, extra);
+    } catch (e) {
+      if (/not modified/.test(e.message)) return;
+    }
+  }
+  return ctx.reply(text, extra);
+}
+// Pilih brand lewat tombol kalau lebih dari satu, selain itu langsung jalan
+function chooseBrand(ctx, question, data) {
+  return ctx.reply(question, Markup.inlineKeyboard([Object.entries(db.brands).map(([b, v]) => btn(v.name, data(b)))]));
+}
+
+async function handleInput(ctx, a) {
+  const text = ctx.message.text.trim();
+  const again = (msg) => { awaiting.set(ctx.from.id, { ...a, at: Date.now() }); return ctx.reply(msg); };
+  const brands = Object.keys(db.brands);
+  switch (a.kind) {
+    case 'keys':
+      await setAccount(ctx, a.brand, text.split(/\s+/));
+      return showPanel(ctx, accountsPanel(), false);
+    case 'newbrand': {
+      const [b, ...keys] = text.split(/\s+/);
+      await setAccount(ctx, b.toLowerCase(), keys);
+      return showPanel(ctx, accountsPanel(), false);
+    }
+    case 'channel': {
+      const c = text.split(/\s+/)[0].toLowerCase();
+      if (!/^(@\w{4,32}|-100\d{5,})$/.test(c)) return again('Format salah. Contoh: @namachannel atau -1001234567890. Kirim lagi, atau /batal');
+      if (brands.length > 1) return chooseBrand(ctx, `Channel ${c} untuk brand mana?`, (b) => `m:chadd:${b}:${c}`);
+      await ctx.reply(await addChannel(c, brands[0]));
+      return showPanel(ctx, channelsPanel(), false);
+    }
+    case 'tpl':
+      await ctx.reply(tplAdd(a.brand, FIELD[a.field], text));
+      return showPanel(ctx, tplPanel(a.brand), false);
+    case 'optin': {
+      const h = norm(text.split(/\s+/)[0]);
+      if (!validHandle(h)) return again('Handle X tidak valid. Contoh: @namaproject. Kirim lagi, atau /batal');
+      if (brands.length > 1) return chooseBrand(ctx, `Opt-in @${h} ke brand mana?`, (b) => `m:optadd:${b}:${h}`);
+      await ctx.reply(addOptinManual(h, brands[0]));
+      return showPanel(ctx, optPanel(), false);
+    }
+    case 'deloptin': {
+      const h = norm(text.split(/\s+/)[0]);
+      if (!db.optins[h]) return again(`@${h} tidak ada di daftar opt-in. Kirim lagi, atau /batal`);
+      delete db.optins[h]; save();
+      await ctx.reply(`🗑 Opt-in @${h} dihapus.`);
+      return showPanel(ctx, optPanel(), false);
+    }
+    case 'blacklist':
+      db.filter.blacklist = text === '-' ? [] : text.split(',').map((w) => w.trim()).filter(Boolean);
+      save();
+      await ctx.reply(`✅ Kata terlarang: ${db.filter.blacklist.join(', ') || '-'}`);
+      return showPanel(ctx, fltPanel(), false);
+  }
+}
+
+bot.command('menu', (ctx) => showPanel(ctx, homePanel(), false));
+bot.command('batal', (ctx) => ctx.reply('Dibatalkan.'));
+
+bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.answerCbQuery('Khusus admin').catch(() => {});
+  const [, act, arg = ''] = ctx.match;
+  const args = arg.split(':');
+  let panel, toast, alert = false;
+  switch (act) {
+    case 'home': panel = homePanel(); break;
+    case 'status': panel = { text: statusText(), rows: [[btn('🔄 Refresh', 'm:status')], HOME] }; break;
+    case 'acc': panel = accountsPanel(); break;
+    case 'acccek': {
+      const checked = {};
+      for (const b of Object.keys(db.brands)) checked[b] = await accountStatus(b);
+      save(); toast = 'Akun dicek'; panel = accountsPanel(checked);
+      break;
+    }
+    case 'accres': if (findBrand(arg)) toast = resume(arg); panel = accountsPanel(); break;
+    case 'accdel':
+      if (!db.brands[arg]?.x) { panel = accountsPanel(); break; }
+      panel = {
+        text: `Yakin lepas akun X <b>${esc(brandLabel(arg))}</b>? Template & opt-in brand ini tetap disimpan.`,
+        rows: [[btn('🗑 Ya, lepas', `m:accdelok:${arg}`), btn('Batal', 'm:acc')]]
+      };
+      break;
+    case 'accdelok': if (db.brands[arg]?.x) toast = 'Akun dilepas'; if (toast) delAccount(arg); panel = accountsPanel(); break;
+    case 'ch': panel = channelsPanel(); break;
+    case 'chref': await refreshChannels().catch((e) => console.error('refreshChannels:', e)); toast = 'Dicek ulang'; panel = channelsPanel(); break;
+    case 'chb': {
+      const keys = Object.keys(db.brands);
+      if (db.channels.includes(arg)) { db.channelBrand[arg] = keys[(keys.indexOf(channelBrand(arg)) + 1) % keys.length]; save(); }
+      panel = channelsPanel();
+      break;
+    }
+    case 'chdel': delChannel(arg); toast = 'Channel dihapus'; panel = channelsPanel(); break;
+    case 'chadd': {
+      const [b, ...rest] = args;
+      if (findBrand(b)) { toast = await addChannel(rest.join(':'), b); alert = toast.startsWith('⚠️'); }
+      panel = channelsPanel();
+      break;
+    }
+    case 'tplb': panel = Object.keys(db.brands).length === 1 ? tplPanel(db.defaultBrand) : tplBrandPanel(); break;
+    case 'tpl': panel = tplPanel(findBrand(arg) || db.defaultBrand); break;
+    case 'tdel': {
+      const [b, f, n] = args;
+      if (!findBrand(b) || !FIELD[f]) break;
+      toast = tplDel(b, FIELD[f], Number(n)); panel = tplPanel(b);
+      break;
+    }
+    case 'twtog': {
+      const b = findBrand(arg);
+      if (!b) break;
+      db.brands[b].ownTweetEnabled = !db.brands[b].ownTweetEnabled; save(); panel = tplPanel(b);
+      break;
+    }
+    case 'opt': panel = optPanel(); break;
+    case 'optadd': {
+      const [b, h] = args;
+      if (findBrand(b) && validHandle(h)) toast = addOptinManual(h, b);
+      panel = optPanel();
+      break;
+    }
+    case 'lim': panel = limPanel(); break;
+    case 'flt': panel = fltPanel(); break;
+    case 'auto': panel = autoPanel(); break;
+    case 'help': panel = { text: HELP, rows: [HOME] }; break;
+    case 'set': {
+      const [path, raw] = args;
+      const v = Number(raw);
+      if (!SETTABLE[path] || !Number.isFinite(v) || v < 0) break;
+      const [o, k] = path.split('.');
+      db[o][k] = v; save(); toast = '✅ Disimpan'; panel = SETTABLE[path]();
+      break;
+    }
+    case 'tog': {
+      if (!TOGGLE[arg]) break;
+      const [o, k] = arg.split('.');
+      db[o][k] = !db[o][k]; save(); toast = '✅ Disimpan'; panel = TOGGLE[arg]();
+      break;
+    }
+    case 'gap': {
+      const [a, b] = args.map(Number);
+      if (!GAPS.some(([x, y]) => x === a && y === b)) break;
+      db.limits.minDelaySec = a; db.limits.maxDelaySec = b; save(); toast = '✅ Disimpan'; panel = limPanel();
+      break;
+    }
+    case 'pause': db.paused = true; save(); toast = '⏸ Bot di-pause'; panel = homePanel(); break;
+    case 'resume': toast = resume(); panel = homePanel(); break;
+    case 'ask': {
+      const [kind, b, f] = args;
+      if (!PROMPTS[kind] || (['keys', 'tpl'].includes(kind) && !findBrand(b)) || (kind === 'tpl' && !FIELD[f])) break;
+      awaiting.set(ctx.from.id, { kind, brand: b, field: f, at: Date.now() });
+      await ctx.answerCbQuery().catch(() => {});
+      return ctx.replyWithHTML(PROMPTS[kind](b, f));
+    }
+  }
+  await ctx.answerCbQuery(toast?.slice(0, 190), { show_alert: alert }).catch(() => {});
+  if (panel) await showPanel(ctx, panel);
 });
+
+// ---------- Menu "/" di Telegram ----------
+const PUBLIC_COMMANDS = [
+  { command: 'optin', description: 'Daftarkan project kamu (opt-in)' },
+  { command: 'verify', description: 'Cek kode opt-in di bio X' },
+  { command: 'optout', description: 'Berhenti opt-in' }
+];
+const ADMIN_COMMANDS = [
+  { command: 'menu', description: '⚙️ Panel pengaturan (tombol)' },
+  { command: 'status', description: 'Status bot & akun X' },
+  { command: 'accounts', description: 'Akun X per brand' },
+  { command: 'channels', description: 'Channel yang dipantau' },
+  { command: 'tpls', description: 'Lihat template' },
+  { command: 'optins', description: 'Daftar project opt-in' },
+  { command: 'jeda', description: 'Lihat/atur jeda komentar' },
+  { command: 'pause', description: 'Pause semua aksi' },
+  { command: 'resume', description: 'Jalankan lagi' },
+  { command: 'batal', description: 'Batalkan input yang sedang ditunggu' },
+  { command: 'help', description: 'Semua perintah' }
+];
+// Gagal untuk admin yang belum pernah /start — diulang saat admin itu /start
+function setAdminCommands(id) {
+  return bot.telegram.setMyCommands(ADMIN_COMMANDS, { scope: { type: 'chat', chat_id: Number(id) } }).catch(() => {});
+}
+async function setupCommands() {
+  await bot.telegram.setMyCommands(PUBLIC_COMMANDS).catch((e) => console.error('setMyCommands:', e.message));
+  for (const id of ADMINS) await setAdminCommands(id);
+}
 
 // ---------- Start ----------
 bot.catch((e) => console.error('bot error:', e));
@@ -1033,6 +1412,7 @@ bot.launch().catch((e) => {
   process.exit(1); // pm2 akan restart otomatis
 });
 console.log('Bot Telegram aktif');
+await setupCommands();
 await report(
   `🟢 <b>Bot online</b>${LISTENER ? '' : ' · mode bot saja'}\n<b>Akun X</b>\n${esc(await accountsReport())}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
   `${missing.length ? `\n⚠️ ${LISTENER ? 'Akun listener belum join' : 'Bot belum jadi admin di'}: ${esc(missing.join(', '))}` : ''}` +
