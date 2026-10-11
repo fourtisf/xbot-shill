@@ -974,7 +974,18 @@ bot.command('status', (ctx) => {
 // ---------- Start ----------
 bot.catch((e) => console.error('bot error:', e));
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
-await startListener();
+// Konfigurasi salah: keluar dengan pesan jelas (jangan tampak "online" di pm2 padahal mati)
+const missingEnv = ['BOT_TOKEN', 'ADMIN_IDS', 'TG_API_ID', 'TG_API_HASH', 'TG_SESSION'].filter((k) => !process.env[k]);
+if (missingEnv.length) {
+  console.error(`❌ .env belum lengkap: ${missingEnv.join(', ')} kosong. Isi .env (lihat .env.example), TG_SESSION dari: npm run login`);
+  process.exit(1);
+}
+try {
+  await startListener();
+} catch (e) {
+  console.error('❌ Listener Telegram gagal start:', e.message);
+  process.exit(1);
+}
 await refreshChannels().catch((e) => console.error('refreshChannels:', e));
 await catchUp();
 bot.launch().catch((e) => {
