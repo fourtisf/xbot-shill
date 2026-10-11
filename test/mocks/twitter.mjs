@@ -16,7 +16,7 @@ export class TwitterApi {
         async me() {
           call('me');
           if (creds.appKey === 'bad') throw Object.assign(new Error('Unauthorized'), { code: 401, data: { detail: 'Unauthorized' } });
-          return { data: { id: '1', username: 'fourtisbot' } };
+          return { data: { id: creds.appKey, username: { dk: 'dexvra_x' }[creds.appKey] || 'fourtisbot' } };
         },
         async userByUsername(h) {
           call('userByUsername', h);
@@ -33,12 +33,12 @@ export class TwitterApi {
           return { tweets: (M.x.timelines[id] || []).slice(0, opts.max_results ?? 10) };
         },
         async reply(text, id) {
-          call('reply', text, id, Date.now());
+          call('reply', text, id, Date.now(), creds.appKey); // akun yang dipakai: elemen terakhir
           failIfQueued('reply');
           return { data: { id: 'r' + ++M.x.n, text } };
         },
         async tweet(text) {
-          call('tweet', text, Date.now());
+          call('tweet', text, Date.now(), creds.appKey);
           failIfQueued('tweet');
           return { data: { id: 't' + ++M.x.n, text } };
         },

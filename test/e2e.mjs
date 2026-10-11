@@ -72,7 +72,9 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   x: { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' },
   channels: ['@alpha', '@beta'],
   reportChat: REPORT,
-  templates: ['Love seeing {name} 🚀'],
+  // Format data versi lama (satu akun, template global): ikut menguji migrasi ke brand
+  templates: ['Love seeing {name} 🚀', '{name} keeps shipping 🔥', 'Big week for {name} 👀'],
+  ownTweetTemplate: '🚀 New project spotted: {name}\nVia {channel}\nx.com/{handle}',
   optins: { optproj: { at: now, via: 'admin' } },
   lastSeen: { 1001: 3 },
   queue: [{ type: 'tweet', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', at: now }],
@@ -120,6 +122,17 @@ async function dm(from, text) {
       chat: { id: from, type: 'private', first_name: 'u' },
       from: { id: from, is_bot: false, first_name: 'u' },
       entities: cmd.startsWith('/') ? [{ type: 'bot_command', offset: 0, length: cmd.length }] : []
+    }
+  });
+  await sleep(30);
+  return messagesTo(from).at(-1);
+}
+async function tap(from, data) {
+  await M.bot.handleUpdate({
+    update_id: updateId++,
+    callback_query: {
+      id: String(updateId), from: { id: from, is_bot: false, first_name: 'u' }, chat_instance: '1', data,
+      message: { message_id: updateId, date: unix(Date.now()), chat: { id: from, type: 'private', first_name: 'u' }, text: 'pilih' }
     }
   });
   await sleep(30);
@@ -175,7 +188,8 @@ await test('restart: antrian tersimpan dilanjutkan', async () => {
 await test('project opt-in di channel → komentar di tweet terbarunya', async () => {
   post(alpha, 'New gem 👀 https://x.com/OptProj');
   const c = await until(() => xcalls('reply').find((c) => c[2] === '1700000000000000001'), 'reply OptProj');
-  assert.equal(c[1], 'Love seeing Opt Project 🚀');
+  assert.ok(['Love seeing Opt Project 🚀', 'Opt Project keeps shipping 🔥', 'Big week for Opt Project 👀'].includes(c[1]), c[1]);
+  assert.equal(c.at(-1), 'k'); // akun Fourtis
   const r = await reportMatching('Komentar terkirim');
   assert.match(r, /setelah post channel/);
 });
@@ -185,7 +199,7 @@ await test('project belum opt-in → akun bot tweet sendiri (bukan reply)', asyn
   const c = await until(() => xcalls('tweet').find((c) => c[1].includes('New Project')), 'tweet NewProj');
   assert.match(c[1], /Via Alpha Calls\nx\.com\/NewProj/);
   assert.equal(xcalls('reply').filter((c) => c[1].includes('New Project')).length, 0);
-  await reportMatching('Tweet bot</b> tentang <b>@NewProj');
+  await reportMatching('Tweet Fourtis (@fourtisbot)</b> tentang <b>@NewProj');
 });
 
 await test('filter: followers kurang & kata terlarang di-skip', async () => {
@@ -267,12 +281,16 @@ await test('/optin: handle tidak valid ditolak & maks. 3 pending per orang', asy
 
 await test('/verify manual tetap jalan', async () => {
   db.auto.autoVerify = false;
-  const code = (await dm(333, '/optin @VerProj')).match(/FTS-[A-Z0-9]+/)[0];
-  assert.match(await dm(333, '/verify @VerProj'), /belum ditemukan/);
-  users.verproj.description = code;
-  assert.match(await dm(333, '/verify @VerProj'), /terverifikasi & opt-in aktif/);
-  assert.equal(db.optins.verproj.by, 333);
-  db.auto.autoVerify = true;
+  try {
+    const code = (await dm(333, '/optin @VerProj')).match(/FTS-[A-Z0-9]+/)[0];
+    assert.match(await dm(333, '/verify @VerProj'), /belum ditemukan/);
+    users.verproj.description = code;
+    assert.match(await dm(333, '/verify @VerProj'), /terverifikasi & opt-in Fourtis aktif/);
+    assert.equal(db.optins.verproj.by, 333);
+    assert.equal(db.optins.verproj.brand, 'fourtis');
+  } finally {
+    db.auto.autoVerify = true;
+  }
 });
 
 await test('kode opt-in kedaluwarsa otomatis', async () => {
@@ -340,7 +358,9 @@ await test('project dengan 10 tweet (dari channel) → hanya 3 terbaru, yang ter
   const newest3 = tweets.slice(-3).reverse().map((t) => t.id);
   await until(() => xcalls('reply').filter((c) => c[1].includes('Many Project')).length === 3, '3 komentar ManyProj');
   await tick(5);
-  assert.deepEqual(xcalls('reply').filter((c) => c[1].includes('Many Project')).map((c) => c[2]), newest3);
+  const many = xcalls('reply').filter((c) => c[1].includes('Many Project'));
+  assert.deepEqual(many.map((c) => c[2]), newest3);
+  assert.equal(new Set(many.map((c) => c[1])).size, 3, 'tiga komentar ke project yang sama harus beda teks');
 });
 
 await test('project opt-in tweet 10x sekaligus (pantauan) → hanya 3 terbaru, yang terbaru duluan', async () => {
@@ -387,18 +407,18 @@ await test('project opt-out saat antre → komentar dibatalkan', async () => {
 await test('rate limit 429 → jeda otomatis, lapor, lalu jalan lagi sendiri & diulang', async () => {
   M.x.failNext.tweet = rateLimitError({ limit: 50, remaining: 0, reset: unix(Date.now()) + 1 });
   post(alpha, 'x.com/RateProj');
-  await reportMatching('Rate limit X (Tweet tentang @RateProj)');
-  assert.ok(db.pausedUntil > Date.now());
-  db.pausedUntil = Date.now() + 200; // percepat waktu tunggu untuk test
-  await reportMatching('Rate limit X selesai');
+  await reportMatching('Rate limit X akun Fourtis');
+  assert.ok(db.pausedUntil.fourtis > Date.now());
+  db.pausedUntil.fourtis = Date.now() + 200; // percepat waktu tunggu untuk test
+  await reportMatching('selesai — jalan lagi otomatis');
   await until(() => xcalls('tweet').filter((c) => c[1].includes('Rate Project')).length === 2, 'tweet RateProj diulang');
 });
 
 await test('batas 24 jam X (userDay) → jeda sampai reset harian', async () => {
   M.x.failNext.tweet = rateLimitError({ limit: 50, remaining: 10, reset: unix(Date.now()) + 60, userDay: { limit: 100, remaining: 0, reset: unix(Date.now()) + 3600 } });
   post(alpha, 'x.com/DayProj');
-  await until(() => db.pausedUntil > Date.now() + 3000_000, 'pausedUntil ~1 jam');
-  db.pausedUntil = Date.now() + 200;
+  await until(() => db.pausedUntil.fourtis > Date.now() + 3000_000, 'pausedUntil ~1 jam');
+  db.pausedUntil.fourtis = Date.now() + 200;
   await until(() => xcalls('tweet').filter((c) => c[1].includes('Day Project')).length === 2, 'tweet DayProj diulang');
 });
 
@@ -441,9 +461,9 @@ await test('/addchannel memberi tahu kalau listener belum join, lalu terdeteksi 
 });
 
 await test('/setx key salah ditolak & key lama tetap dipakai', async () => {
-  const good = db.x;
+  const good = db.brands.fourtis.x;
   assert.match(await dm(ADMIN, '/setx bad b c d'), /Key tidak valid[\s\S]*Key lama tetap dipakai/);
-  assert.deepEqual(db.x, good);
+  assert.deepEqual(db.brands.fourtis.x, good);
   assert.match(await dm(ADMIN, '/xstatus'), /✅ @fourtisbot/);
 });
 
@@ -452,6 +472,135 @@ await test('/auto & /limits bisa diubah, nilai bukan angka ditolak', async () =>
   assert.equal(db.auto.maxRepliesPerProjectPerDay, 3);
   assert.match(await dm(ADMIN, '/limits maxPerDay abc'), /harus angka/);
   assert.equal(db.limits.maxPerDay, 1000);
+});
+
+await test('data lama otomatis jadi brand Fourtis', async () => {
+  assert.deepEqual(db.brands.fourtis.x, { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' });
+  assert.equal(db.brands.fourtis.templates.length, 3);
+  assert.equal(db.brands.fourtis.username, 'fourtisbot');
+  assert.equal(db.x, undefined);
+  assert.ok(db.brands.dexvra && !db.brands.dexvra.x);
+});
+
+await test('template habis → komentar dilewati, tidak ada komentar kembar', async () => {
+  const saved = db.brands.fourtis.templates;
+  db.brands.fourtis.templates = ['Only {name} 🙌'];
+  users.tplproj = user('u24', 'TplProj', 'Tpl Project');
+  db.optins.tplproj = { at: Date.now(), via: 'admin' };
+  M.x.timelines.u24 = tenTweets(400, 'tpl').reverse();
+  try {
+    post(alpha, 'x.com/TplProj');
+    await reportMatching('sudah terpakai semua hari ini');
+    assert.equal(xcalls('reply').filter((c) => c[1].includes('Tpl Project')).length, 1);
+  } finally {
+    db.brands.fourtis.templates = saved;
+  }
+});
+
+// ---------- Multi akun / brand ----------
+await test('/addaccount dexvra → akun kedua tersambung, /accounts menampilkan dua brand', async () => {
+  assert.match(await dm(ADMIN, '/addaccount dexvra dk ds dt da'), /Akun X Dexvra tersambung: @dexvra_x/);
+  assert.equal(db.brands.dexvra.x.appKey, 'dk');
+  const a = await dm(ADMIN, '/accounts');
+  assert.match(a, /Fourtis<\/b> \(fourtis\) · utama\nAkun X: ✅ @fourtisbot/);
+  assert.match(a, /Dexvra<\/b> \(dexvra\)\nAkun X: ✅ @dexvra_x/);
+});
+
+await test('/addaccount: key salah ditolak, satu akun X tidak boleh dipakai dua brand', async () => {
+  assert.match(await dm(ADMIN, '/addaccount dexvra bad b c d'), /Key tidak valid[\s\S]*Key lama tetap dipakai/);
+  assert.equal(db.brands.dexvra.x.appKey, 'dk');
+  assert.match(await dm(ADMIN, '/addaccount fourtis2 k s t a'), /sudah dipakai brand Fourtis/);
+  assert.equal(db.brands.fourtis2, undefined);
+  assert.match(await dm(ADMIN, '/addaccount Bad-Name a b c d'), /Nama brand/);
+});
+
+await test('template per brand: /addtpl, /addtweet, /tpls, /deltpl (baris baru tetap)', async () => {
+  const n = db.brands.dexvra.templates.length;
+  assert.match(await dm(ADMIN, '/addtpl dexvra Dexvra sees {name} 💎'), /komentar Dexvra #/);
+  assert.equal(db.brands.dexvra.templates.length, n + 1);
+  assert.equal(db.brands.fourtis.templates.length, 3); // brand lain tidak berubah
+  assert.match(await dm(ADMIN, '/addtweet dexvra 💎 {name}\nx.com/{handle}'), /tweet Dexvra #/);
+  assert.equal(db.brands.dexvra.tweetTemplates.at(-1), '💎 {name}\nx.com/{handle}');
+  assert.match(await dm(ADMIN, '/tpls dexvra'), /== Dexvra ==[\s\S]*Dexvra sees \{name\}/);
+  assert.doesNotMatch(await dm(ADMIN, '/tpls dexvra'), /== Fourtis ==/);
+  assert.match(await dm(ADMIN, `/deltpl dexvra ${n + 1}`), /Dihapus dari Dexvra/);
+  assert.match(await dm(ADMIN, '/addtpl Love it {name}'), /komentar Fourtis #4/); // tanpa brand = brand utama
+  db.brands.fourtis.templates.pop();
+});
+
+await test('channel brand Dexvra → tweet dari akun Dexvra dengan template Dexvra', async () => {
+  users.dexnew = user('u25', 'DexNew', 'Dex New');
+  assert.match(await dm(ADMIN, '/addchannel @gamma dexvra'), /@gamma → Dexvra ditambahkan & sudah dipantau/);
+  assert.match(await dm(ADMIN, '/channels'), /@gamma → Dexvra/);
+  post(gamma, 'x.com/DexNew');
+  const c = await until(() => xcalls('tweet').find((c) => c[1].includes('Dex New')), 'tweet DexNew');
+  assert.equal(c.at(-1), 'dk');
+  assert.ok(db.brands.dexvra.tweetTemplates.some((t) => c[1] === t.replace('{name}', 'Dex New').replace('{handle}', 'DexNew').replace('{channel}', 'Not A Target')), c[1]);
+  await reportMatching('Tweet Dexvra (@dexvra_x)</b> tentang <b>@DexNew');
+});
+
+await test('project yang sama di channel brand lain tidak di-tweet dua akun', async () => {
+  post(alpha, 'again x.com/DexNew'); // channel Fourtis
+  await tick(5);
+  assert.equal(xcalls('tweet').filter((c) => c[1].includes('Dex New')).length, 1);
+});
+
+await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {
+  users.brandproj = user('u26', 'BrandProj', 'Brand Project');
+  M.x.timelines.u26 = [{ id: snow(now, 500), text: 'brand news', created_at: new Date().toISOString() }];
+  await dm(777, '/optin @BrandProj');
+  const kb = sent().filter((c) => c.payload.chat_id === 777).at(-1).payload.reply_markup.inline_keyboard[0];
+  assert.deepEqual(kb.map((b) => b.callback_data), ['optin:fourtis:brandproj', 'optin:dexvra:brandproj']);
+  const r = await tap(777, 'optin:dexvra:brandproj');
+  assert.match(r, /Dexvra \(@dexvra_x\)/);
+  const code = r.match(/DEX-[A-Z0-9]+/)[0];
+  users.brandproj.description = code;
+  await until(() => db.optins.brandproj, 'auto-verify BrandProj');
+  assert.equal(db.optins.brandproj.brand, 'dexvra');
+  await until(() => messagesTo(777).some((m) => m.includes('opt-in Dexvra aktif')), 'DM Dexvra');
+  post(alpha, 'x.com/BrandProj'); // channel Fourtis, tapi project milih Dexvra
+  const c = await until(() => xcalls('reply').find((c) => c[2] === snow(now, 500)), 'reply BrandProj');
+  assert.equal(c.at(-1), 'dk');
+  assert.equal(xcalls('reply').filter((c) => c[2] === snow(now, 500)).length, 1);
+  assert.match(await dm(ADMIN, '/optins'), /@brandproj → Dexvra/);
+});
+
+await test('/optin @handle brand langsung tanpa tombol', async () => {
+  const r = await dm(778, '/optin @DirectProj fourtis');
+  assert.match(r, /FTS-[A-Z0-9]+/);
+  assert.equal(db.pending.directproj.brand, 'fourtis');
+  assert.match(await dm(778, '/optin @OtherProj2 nope'), /Brand tidak dikenal/);
+  delete db.pending.directproj;
+});
+
+await test('rate limit akun Dexvra tidak menghentikan akun Fourtis', async () => {
+  users.dexrate = user('u27', 'DexRate', 'Dex Rate');
+  users.fourfree = user('u28', 'FourFree', 'Four Free');
+  M.x.failNext.tweet = rateLimitError({ limit: 50, remaining: 0, reset: unix(Date.now()) + 600 });
+  post(gamma, 'x.com/DexRate');
+  await until(() => db.pausedUntil.dexvra > Date.now(), 'Dexvra jeda');
+  assert.ok(!db.pausedUntil.fourtis);
+  post(alpha, 'x.com/FourFree');
+  const c = await until(() => xcalls('tweet').find((c) => c[1].includes('Four Free')), 'Fourtis tetap jalan');
+  assert.equal(c.at(-1), 'k');
+  assert.match(await dm(ADMIN, '/status'), /Dexvra \(@dexvra_x\): ⏸ rate limit/);
+  db.pausedUntil.dexvra = Date.now() + 200;
+  await until(() => xcalls('tweet').filter((c) => c[1].includes('Dex Rate')).length === 2, 'Dexvra lanjut sendiri');
+});
+
+await test('/tweet off dexvra hanya mematikan tweet Dexvra', async () => {
+  assert.match(await dm(ADMIN, '/tweet off dexvra'), /OFF \(Dexvra\)/);
+  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
+  assert.equal(db.brands.fourtis.ownTweetEnabled, true);
+  await dm(ADMIN, '/tweet on dexvra');
+});
+
+await test('/delaccount → akun dihapus, template & brand tetap', async () => {
+  assert.match(await dm(ADMIN, '/delaccount dexvra'), /Akun X Dexvra dihapus/);
+  assert.equal(db.brands.dexvra.x, null);
+  assert.ok(db.brands.dexvra.templates.length);
+  assert.match(await dm(ADMIN, '/accounts'), /Dexvra<\/b> \(dexvra\)\nAkun X: ❌ belum ada akun/);
+  assert.match(await dm(ADMIN, '/addaccount dexvra dk ds dt da'), /tersambung/);
 });
 
 await test('/jeda: atur jeda dalam menit', async () => {
@@ -490,7 +639,8 @@ await test('ringkasan harian + backup otomatis', async () => {
   db.lastDaily = null;
   const r = await reportMatching('Ringkasan harian');
   assert.match(r, /Komentar terkirim: \d+/);
-  assert.match(r, /Akun X: ✅ @fourtisbot/);
+  assert.match(r, /Fourtis: ✅ @fourtisbot/);
+  assert.match(r, /Dexvra: /);
   const backups = fs.readdirSync(path.join(tmp, 'backups'));
   assert.equal(backups.length, 1);
   assert.deepEqual(db.stats, {});
