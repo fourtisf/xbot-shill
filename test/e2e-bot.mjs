@@ -182,9 +182,9 @@ await test('/status menampilkan mode bot saja', async () => {
 // ---------- Menu "/" dan panel tombol ----------
 await test('menu "/" terdaftar: publik untuk project, lengkap untuk admin', async () => {
   const calls = M.botCalls.filter((c) => c.method === 'setMyCommands');
-  const pub = calls.find((c) => !c.payload.scope);
   const adm = calls.find((c) => c.payload.scope?.chat_id === ADMIN);
-  assert.deepEqual(pub.payload.commands.map((c) => c.command), ['optin', 'verify', 'optout']);
+  assert.ok(!calls.some((c) => !c.payload.scope), 'bot privat: tidak ada menu publik');
+  assert.ok(M.botCalls.some((c) => c.method === 'deleteMyCommands' && !c.payload.scope));
   assert.ok(adm.payload.commands.some((c) => c.command === 'menu'));
   assert.ok(adm.payload.commands.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command) && c.description.length >= 3));
 });
@@ -196,7 +196,7 @@ await test('/start dari admin → panel tombol (dan menu admin dipasang ulang)',
   assert.match(p.text, /Panel pengaturan/);
   for (const d of ['m:status', 'm:acc', 'm:ch', 'm:tplb', 'm:opt', 'm:lim', 'm:flt', 'm:auto', 'm:pause', 'm:help']) assert.ok(dataOf(p).includes(d), d);
   assert.ok(M.botCalls.filter((c) => c.method === 'setMyCommands').length > before);
-  assert.match(await dm(222, '/start'), /optin/); // bukan admin: sapaan biasa, tanpa panel
+  assert.match(await dm(222, '/start'), /Bot ini privat[\s\S]*222/); // bukan admin: tanpa panel
 });
 
 await test('Jeda & Batas: klik preset langsung mengubah nilai', async () => {
@@ -317,6 +317,30 @@ await test('Pause / jalankan lagi dari panel; bukan admin tidak bisa pakai panel
   await tap(222, 'm:ask:channel');
   await dm(222, '@sneaky');
   assert.ok(!db.channels.includes('@sneaky'));
+});
+
+await test('bot privat: orang lain tidak bisa /optin; pesan privat maks. 1x per 10 menit', async () => {
+  const n = messagesTo(333).length;
+  assert.match(await dm(333, '/optin @SneakProj'), /Bot ini privat[\s\S]*333/);
+  assert.equal(db.pending.sneakproj, undefined);
+  await dm(333, '/menu');
+  await dm(333, 'halo');
+  assert.equal(messagesTo(333).length, n + 1);
+});
+
+await test('opt-in publik bisa dinyalakan dari panel (menu publik ikut muncul), lalu dimatikan lagi', async () => {
+  const p = await tap(ADMIN, 'm:auto');
+  assert.ok(buttonsOf(p).some((b) => b.text === 'Opt-in publik (/optin project): ❌ OFF'));
+  await tap(ADMIN, 'm:tog:auto.publicOptin');
+  assert.equal(db.auto.publicOptin, true);
+  const pub = M.botCalls.filter((c) => c.method === 'setMyCommands' && !c.payload.scope).at(-1);
+  assert.deepEqual(pub.payload.commands.map((c) => c.command), ['optin', 'verify', 'optout']);
+  assert.match(await dm(444, '/optin @OpenProj fourtis'), /FTS-[A-Z0-9]+/);
+  assert.ok(db.pending.openproj);
+  assert.match(await dm(444, '/status'), /Bot ini privat/); // perintah admin tetap tertutup
+  await tap(ADMIN, 'm:tog:auto.publicOptin');
+  assert.equal(db.auto.publicOptin, false);
+  delete db.pending.openproj;
 });
 
 await test('BOT_TOKEN kosong → berhenti dengan pesan jelas (TG API tidak diminta)', async () => {

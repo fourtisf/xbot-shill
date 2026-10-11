@@ -700,7 +700,23 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 
 /pause · /resume · /resume brand · /status
 
-<b>Untuk project</b>: /optin @handle [brand] (verifikasi otomatis, atau /verify @handle)`;
+<b>Untuk project</b> (hanya kalau opt-in publik ON di /menu → Otomatis): /optin @handle [brand], /verify @handle`;
+
+// Bot privat: hanya ADMIN_IDS. Project hanya bisa /optin sendiri kalau opt-in publik dinyalakan (panel Otomatis).
+// Post channel lewat (dibaca bot / /setreport punya cek admin sendiri)
+const PUBLIC_CMD = /^\/(start|optin|verify|optout)(@\w+)?(\s|$)/;
+const noticeAt = new Map();
+bot.use((ctx, next) => {
+  if (ctx.channelPost || isAdmin(ctx)) return next();
+  if (db.auto.publicOptin && (PUBLIC_CMD.test(ctx.message?.text || '') || ctx.callbackQuery?.data?.startsWith('optin:'))) return next();
+  if (ctx.callbackQuery) return ctx.answerCbQuery('Khusus admin').catch(() => {});
+  if (ctx.chat?.type !== 'private' || !ctx.message) return;
+  const id = ctx.from.id;
+  console.log(`Pesan dari user ${id} (@${ctx.from.username || '-'}) diabaikan: bukan ADMIN_IDS`);
+  if (Date.now() - (noticeAt.get(id) || 0) < 600_000) return; // balas maks. 1x per 10 menit
+  noticeAt.set(id, Date.now());
+  return ctx.replyWithHTML(`⛔ Bot ini privat — hanya untuk pemilik.\nID Telegram kamu: <code>${id}</code>`);
+});
 
 bot.start((ctx) => {
   if (isAdmin(ctx)) {
@@ -1119,7 +1135,8 @@ function optPanel() {
   const lines = list.slice(0, 30).map(([h, o]) => `@${esc(h)} → ${esc(brandName(brandOf(o)))}`);
   return {
     text: `🤝 <b>Opt-in</b> (${list.length})\n${lines.join('\n') || 'Belum ada.'}${list.length > 30 ? `\n… +${list.length - 30} lagi (/optins)` : ''}\n\n` +
-      `Menunggu verifikasi bio: ${Object.keys(db.pending).length}\nProject daftar sendiri dengan /optin @handle di bot ini.`,
+      `Menunggu verifikasi bio: ${Object.keys(db.pending).length}\n` +
+      (db.auto.publicOptin ? 'Project bisa daftar sendiri dengan /optin @handle di bot ini.' : 'Opt-in publik OFF: hanya Anda yang bisa menambah opt-in (bot privat).'),
     rows: [[btn('➕ Opt-in manual', 'm:ask:optin'), btn('🗑 Hapus opt-in', 'm:ask:deloptin')], HOME]
   };
 }
@@ -1161,11 +1178,13 @@ function autoPanel() {
   const a = db.auto;
   return {
     text: `🤖 <b>Otomatis</b>\n\nPantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'} (tiap ${a.watchIntervalMin} menit)\n` +
-      `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00`,
+      `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00\n` +
+      `Opt-in publik: ${a.publicOptin ? 'ON — project bisa /optin sendiri' : 'OFF — bot privat, hanya Anda'}`,
     rows: [
       [btn(`Pantau tweet opt-in: ${a.watchOptins ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.watchOptins')],
       optionRow('Tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], (v) => `${v}m`),
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
+      [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       optionRow('Ringkasan', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
       HOME
     ]
@@ -1178,7 +1197,7 @@ const SETTABLE = {
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
   'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel
 };
-const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel };
+const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel };
 
 const PROMPTS = {
   keys: (b) => `🔑 Kirim 4 key X untuk <b>${esc(brandName(b))}</b> dalam satu pesan, dipisah spasi:\n` +
@@ -1335,6 +1354,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
       if (!TOGGLE[arg]) break;
       const [o, k] = arg.split('.');
       db[o][k] = !db[o][k]; save(); toast = '✅ Disimpan'; panel = TOGGLE[arg]();
+      if (arg === 'auto.publicOptin') await setPublicCommands();
       break;
     }
     case 'gap': {
@@ -1380,8 +1400,13 @@ const ADMIN_COMMANDS = [
 function setAdminCommands(id) {
   return bot.telegram.setMyCommands(ADMIN_COMMANDS, { scope: { type: 'chat', chat_id: Number(id) } }).catch(() => {});
 }
+// Menu "/" untuk orang lain: kosong kalau bot privat
+function setPublicCommands() {
+  return (db.auto.publicOptin ? bot.telegram.setMyCommands(PUBLIC_COMMANDS) : bot.telegram.deleteMyCommands())
+    .catch((e) => console.error('setMyCommands:', e.message));
+}
 async function setupCommands() {
-  await bot.telegram.setMyCommands(PUBLIC_COMMANDS).catch((e) => console.error('setMyCommands:', e.message));
+  await setPublicCommands();
   for (const id of ADMINS) await setAdminCommands(id);
 }
 

@@ -69,7 +69,8 @@ const defaults = {
     catchUpMin: 5, // ambil post channel yang terlewat (bot mati / koneksi putus)
     catchUpMaxAgeHours: 6,
     dailyReportHour: 9, // jam ringkasan harian + backup (zona waktu TZ di .env)
-    backupKeep: 7
+    backupKeep: 7,
+    publicOptin: false // false = bot privat, hanya ADMIN_IDS; true = project boleh /optin sendiri
   },
   queue: [], // antrian aksi X, tersimpan supaya tidak hilang saat restart
   sentAt: {}, // brand -> waktu aksi X 24 jam terakhir (batas per jam/hari per akun)

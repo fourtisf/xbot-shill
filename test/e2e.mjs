@@ -79,7 +79,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   lastSeen: { 1001: 3 },
   queue: [{ type: 'tweet', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', at: now }],
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 }, // test melakukan banyak aksi
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0 },
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true },
   lastDaily: new Date().toDateString()
 }));
 
@@ -253,8 +253,8 @@ await test('/setreport: channel orang lain ditolak, channel admin diterima', asy
 });
 
 await test('non-admin tidak bisa pakai perintah admin', async () => {
-  assert.equal(await dm(222, '/status'), undefined);
-  assert.equal(await dm(222, '/pause'), undefined);
+  assert.match(await dm(222, '/status'), /Bot ini privat[\s\S]*222/);
+  await dm(222, '/pause');
   assert.equal(db.paused, false);
 });
 
