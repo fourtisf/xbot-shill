@@ -201,7 +201,7 @@ await test('/start dari admin → panel tombol (dan menu admin dipasang ulang)',
 
 await test('Jeda & Batas: klik preset langsung mengubah nilai', async () => {
   let p = await tap(ADMIN, 'm:lim');
-  assert.match(p.text, /Jeda & Batas/);
+  assert.match(p.text, /Jeda &amp; Batas/);
   p = await tap(ADMIN, 'm:set:limits.maxPerHour:30');
   assert.equal(db.limits.maxPerHour, 30);
   assert.ok(buttonsOf(p).some((b) => b.text === '✅30'));
@@ -351,6 +351,86 @@ await test('BOT_TOKEN kosong → berhenti dengan pesan jelas (TG API tidak dimin
   assert.equal(r.status, 1);
   assert.match(r.stderr, /\.env belum lengkap: BOT_TOKEN kosong/);
   assert.doesNotMatch(r.stderr, /TG_API|TG_SESSION/);
+});
+
+// ---------- Tur lengkap: setiap perintah & setiap tombol ----------
+await test('setiap perintah admin membalas tanpa error', async () => {
+  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto });
+  const cmds = [
+    '/help', '/menu', '/status', '/accounts', '/xstatus', '/channels', '/tpls', '/tpls dexvra', '/optins',
+    '/filter', '/filter minAgeDays 7', '/limits', '/limits maxPerDay 60', '/auto', '/auto dailyReportHour 8',
+    '/jeda', '/jeda 2 4', '/jeda project 3', '/jeda abc',
+    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99', '/addtweet Tur {name}\nx.com/{handle}', '/deltweet 99',
+    '/tweet off dexvra', '/tweet on dexvra', '/tweet maybe',
+    '/addoptin @TourProj dexvra', '/addoptin bad-handle', '/deloptin @tourproj',
+    '/addchannel @tourch', '/delchannel @tourch', '/addchannel', '/addchannel @x nobrand',
+    '/pause', '/resume', '/resume dexvra', '/resume nobrand',
+    '/delaccount', '/delaccount nobrand', '/setx', '/addaccount', '/addaccount dexvra bad b c d',
+    '/optin', '/verify', '/optout', '/batal', '/start'
+  ];
+  const silent = [];
+  for (const c of cmds) {
+    const n = M.botCalls.filter((x) => x.method === 'sendMessage' && String(x.payload.chat_id) === String(ADMIN)).length;
+    await dm(ADMIN, c);
+    const m = M.botCalls.filter((x) => x.method === 'sendMessage' && String(x.payload.chat_id) === String(ADMIN)).length;
+    if (m === n) silent.push(c);
+  }
+  assert.deepEqual(silent, [], 'perintah tanpa balasan');
+  db.brands.dexvra.templates = db.brands.dexvra.templates.filter((t) => !t.startsWith('Tur '));
+  db.brands.fourtis.tweetTemplates = db.brands.fourtis.tweetTemplates.filter((t) => !t.startsWith('Tur '));
+  Object.assign(db, JSON.parse(snap));
+  assert.equal(db.paused, false);
+});
+
+await test('/setreport di DM dan di channel (bot mode) mengatur channel laporan', async () => {
+  await dm(ADMIN, '/setreport');
+  assert.equal(db.reportChat, ADMIN);
+  M.chatAdmins[-1007777] = [ADMIN];
+  await M.bot.handleUpdate({ update_id: updateId++, channel_post: { message_id: 1, date: unix(Date.now()), chat: { id: -1007777, type: 'channel', title: 'Lap' }, text: '/setreport', entities: [{ type: 'bot_command', offset: 0, length: 10 }] } });
+  await until(() => db.reportChat === -1007777, 'reportChat channel');
+  db.reportChat = REPORT;
+});
+
+await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', async () => {
+  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands, channelBrand: db.channelBrand });
+  const skip = /^m:(accdelok|chdel|tdel|optadd|chadd):/; // aksi hapus/tambah diuji terpisah
+  const seen = new Set(), queue = ['m:home'], noAnswer = [], noPanel = [];
+  while (queue.length && seen.size < 300) {
+    const d = queue.shift();
+    if (seen.has(d) || skip.test(d)) continue;
+    seen.add(d);
+    const answers = M.botCalls.filter((c) => c.method === 'answerCallbackQuery').length;
+    const p = await tap(ADMIN, d);
+    if (M.botCalls.filter((c) => c.method === 'answerCallbackQuery').length === answers) noAnswer.push(d);
+    if (!p?.text) noPanel.push(d);
+    if (d.startsWith('m:ask:')) { await dm(ADMIN, '/batal'); continue; }
+    for (const x of dataOf(p)) if (x?.startsWith('m:') && !seen.has(x)) queue.push(x);
+  }
+  Object.assign(db, JSON.parse(snap));
+  await tap(ADMIN, 'm:home');
+  assert.ok(seen.size > 60, `hanya ${seen.size} tombol ditelusuri`);
+  assert.deepEqual(noAnswer, [], 'tombol tanpa respons (loading terus)');
+  assert.deepEqual(noPanel, [], 'tombol tanpa tampilan');
+  console.log(`     (${seen.size} tombol ditelusuri)`);
+});
+
+await test('data besar (40 template, 300 opt-in, 60 channel): daftar & panel tetap terkirim', async () => {
+  const snap = JSON.stringify({ brands: db.brands, optins: db.optins, channels: db.channels, channelBrand: db.channelBrand });
+  for (let i = 0; i < 40; i++) db.brands.dexvra.templates.push(`Template panjang nomor ${i} untuk {name} `.repeat(4));
+  for (let i = 0; i < 300; i++) db.optins[`proj_${i}`] = { at: now, via: 'admin', brand: i % 2 ? 'dexvra' : 'fourtis' };
+  for (let i = 0; i < 60; i++) db.channels.push(`@channel_nomor_${i}`);
+  const n = M.botCalls.filter((c) => c.method === 'sendMessage').length;
+  await dm(ADMIN, '/optins');
+  await dm(ADMIN, '/tpls');
+  await dm(ADMIN, '/channels');
+  assert.ok(M.botCalls.filter((c) => c.method === 'sendMessage').length - n > 3, 'daftar panjang dipecah');
+  for (const d of ['m:tpl:dexvra', 'm:opt', 'm:ch', 'm:acc', 'm:home', 'm:status']) assert.ok((await tap(ADMIN, d))?.text, d);
+  Object.assign(db, JSON.parse(snap));
+});
+
+await test('semua pesan bot lolos aturan Telegram (HTML, panjang, tombol, perintah)', async () => {
+  if (M.apiErrors.length) console.log(JSON.stringify(M.apiErrors, null, 1));
+  assert.deepEqual(M.apiErrors, []);
 });
 
 const failed = results.filter(([ok]) => !ok).length;

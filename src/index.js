@@ -668,12 +668,23 @@ async function tick() {
 }
 
 // ---------- Perintah bot ----------
+// Telegram menolak pesan > 4096 karakter: daftar panjang dikirim per potongan (dipotong di akhir baris)
+async function replyLong(ctx, text) {
+  const parts = [];
+  let cur = '';
+  for (const line of text.split('\n').flatMap((l) => l.match(/[\s\S]{1,4000}/g) || [''])) {
+    if (cur && cur.length + 1 + line.length > 4000) { parts.push(cur); cur = line; } else cur = cur ? `${cur}\n${line}` : line;
+  }
+  parts.push(cur);
+  for (const p of parts) await ctx.reply(p);
+}
+
 const HELP = `<b>Fourtis X Agent</b>
 Paling mudah: /menu — semua pengaturan pakai tombol
 
 <b>Akun X (1 akun per brand)</b>
 /addaccount brand APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
-/accounts — semua brand & akun · /delaccount brand
+/accounts — semua brand &amp; akun · /delaccount brand
 /setx ... — sama dengan /addaccount untuk brand utama
 
 <b>Channel</b>
@@ -689,7 +700,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 <b>Opt-in</b>
 /optins · /addoptin @handle [brand] · /deloptin @handle
 
-<b>Filter & batas</b>
+<b>Filter &amp; batas</b>
 /filter — lihat · /filter minFollowers 500
 /limits — lihat · /limits maxPerHour 20 (per akun)
 /filter tweetsPerProject 3 — jumlah tweet terbaru yang dikomentari
@@ -892,7 +903,7 @@ bot.command('delchannel', (ctx) => {
   delChannel((ctx.message.text.split(/\s+/)[1] || '').toLowerCase());
   ctx.reply('Dihapus.');
 });
-bot.command('channels', (ctx) => ctx.reply(db.channels.length
+bot.command('channels', (ctx) => replyLong(ctx, db.channels.length
   ? db.channels.map((c) => `${targets.has(c) ? '✅' : `⚠️ ${NOT_READ}`} ${c} → ${brandName(channelBrand(c))}`).join('\n')
   : 'Belum ada channel.'));
 
@@ -952,7 +963,7 @@ bot.command('tpls', (ctx) => {
     const list = (l) => l.map((t, i) => `${i + 1}. ${t}`).join('\n');
     return `== ${v.name} ==\nKomentar:\n${list(v.templates)}\n\nTweet bot (${v.ownTweetEnabled ? 'ON' : 'OFF'}):\n${list(v.tweetTemplates)}`;
   };
-  ctx.reply((b ? [b] : Object.keys(db.brands)).map(show).join('\n\n'));
+  return replyLong(ctx, (b ? [b] : Object.keys(db.brands)).map(show).join('\n\n'));
 });
 bot.command('tweet', (ctx) => {
   const [, v, b] = ctx.message.text.split(/\s+/);
@@ -968,7 +979,7 @@ bot.command('tweet', (ctx) => {
 bot.command('optins', (ctx) => {
   const list = Object.entries(db.optins);
   const pending = Object.entries(db.pending);
-  ctx.reply((list.length ? `Opt-in (${list.length}):\n` + list.map(([h, o]) => `@${h} → ${brandName(brandOf(o))}`).join('\n') : 'Belum ada.') +
+  return replyLong(ctx, (list.length ? `Opt-in (${list.length}):\n` + list.map(([h, o]) => `@${h} → ${brandName(brandOf(o))}`).join('\n') : 'Belum ada.') +
     (pending.length ? `\n\nMenunggu verifikasi bio (${pending.length}):\n` + pending.map(([h, p]) => `@${h} → ${brandName(brandOf(p))}`).join('\n') : ''));
 });
 bot.command('addoptin', (ctx) => {
@@ -1103,12 +1114,12 @@ function accountsPanel(checked = {}) {
   return { text: `👤 <b>Akun X</b> (1 akun per brand)\n\n${lines.join('\n\n')}`, rows };
 }
 function channelsPanel() {
-  const lines = db.channels.map((c) => `${targets.has(c) ? '✅' : '⚠️'} ${esc(c)} → ${esc(brandName(channelBrand(c)))}${targets.has(c) ? '' : ` (${NOT_READ})`}`);
+  const lines = db.channels.slice(0, 40).map((c) => `${targets.has(c) ? '✅' : '⚠️'} ${esc(c)} → ${esc(brandName(channelBrand(c)))}${targets.has(c) ? '' : ` (${NOT_READ})`}`);
   const rows = db.channels.slice(0, 20).map((c) => [btn(`🔁 ${c}: ${brandName(channelBrand(c))}`, `m:chb:${c}`), btn('🗑', `m:chdel:${c}`)]);
   rows.push([btn('➕ Tambah channel', 'm:ask:channel'), btn('🔄 Cek ulang', 'm:chref')], HOME);
   return {
     text: `📢 <b>Channel target</b>\n${LISTENER ? 'Akun listener harus join channel.' : 'Bot harus jadi admin di channel.'} Tombol 🔁 = ganti brand.\n\n` +
-      (lines.join('\n') || 'Belum ada channel.'),
+      (lines.join('\n') || 'Belum ada channel.') + (db.channels.length > 40 ? `\n… +${db.channels.length - 40} lagi (/channels)` : ''),
     rows
   };
 }
@@ -1117,8 +1128,10 @@ function tplBrandPanel() {
 }
 function tplPanel(b) {
   const v = db.brands[b];
-  const list = (l) => l.map((t, i) => `${i + 1}. ${esc(t.length > 120 ? t.slice(0, 120) + '…' : t)}`).join('\n');
-  const delRows = (l, f) => chunk(l.map((_, i) => btn(`🗑 ${f.toUpperCase()}${i + 1}`, `m:tdel:${b}:${f}:${i + 1}`)), 5);
+  // Maks. 15 per jenis supaya muat batas Telegram (4096 karakter, 100 tombol); sisanya lewat /tpls
+  const list = (l) => l.slice(0, 15).map((t, i) => `${i + 1}. ${esc(t.length > 100 ? t.slice(0, 100) + '…' : t)}`).join('\n') +
+    (l.length > 15 ? `\n… +${l.length - 15} lagi (/tpls ${b})` : '');
+  const delRows = (l, f) => chunk(l.slice(0, 15).map((_, i) => btn(`🗑 ${f.toUpperCase()}${i + 1}`, `m:tdel:${b}:${f}:${i + 1}`)), 5);
   return {
     text: `📝 <b>Template ${esc(v.name)}</b>\nVariabel: {name} {handle} {channel}\n\n<b>K = Komentar</b> (project opt-in):\n${list(v.templates)}\n\n` +
       `<b>T = Tweet bot</b> (project belum opt-in, ${v.ownTweetEnabled ? 'ON' : 'OFF'}):\n${list(v.tweetTemplates)}`,
@@ -1144,7 +1157,7 @@ const GAPS = [[30, 90], [60, 180], [180, 360], [300, 600]];
 function limPanel() {
   const { minDelaySec: lo, maxDelaySec: hi } = db.limits;
   return {
-    text: `⏱ <b>Jeda & Batas</b> (berlaku per akun X)\n\nJeda antar aksi: ${fmtGap()}\nJeda komentar ke project yang sama: ${db.auto.replyGapMin} menit\n` +
+    text: `⏱ <b>Jeda &amp; Batas</b> (berlaku per akun X)\n\nJeda antar aksi: ${fmtGap()}\nJeda komentar ke project yang sama: ${db.auto.replyGapMin} menit\n` +
       `Tweet terbaru yang dikomentari: ${db.filter.tweetsPerProject}\nMaks. komentar per project/hari: ${db.auto.maxRepliesPerProjectPerDay}\n` +
       `Maks. aksi per jam: ${db.limits.maxPerHour} · per hari: ${db.limits.maxPerDay}\n\nNilai lain: /jeda 2 4 · /limits maxPerHour 15`,
     rows: [
@@ -1297,7 +1310,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'accdel':
       if (!db.brands[arg]?.x) { panel = accountsPanel(); break; }
       panel = {
-        text: `Yakin lepas akun X <b>${esc(brandLabel(arg))}</b>? Template & opt-in brand ini tetap disimpan.`,
+        text: `Yakin lepas akun X <b>${esc(brandLabel(arg))}</b>? Template &amp; opt-in brand ini tetap disimpan.`,
         rows: [[btn('🗑 Ya, lepas', `m:accdelok:${arg}`), btn('Batal', 'm:acc')]]
       };
       break;

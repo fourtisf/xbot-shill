@@ -782,6 +782,11 @@ await test('data.json rusak → dipulihkan otomatis dari backup', async () => {
   assert.equal(out.toString().trim(), '["@recovered"]');
 });
 
+await test('semua pesan bot lolos aturan Telegram (HTML, panjang, tombol, perintah)', async () => {
+  if (M.apiErrors.length) console.log(JSON.stringify(M.apiErrors, null, 1));
+  assert.deepEqual(M.apiErrors, []);
+});
+
 const failed = results.filter(([ok]) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} lulus`);
 process.exit(failed ? 1 : 0);
