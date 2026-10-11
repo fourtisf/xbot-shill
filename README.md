@@ -15,7 +15,9 @@ Semua pengaturan lewat bot Telegram — tidak ada website.
 | Pantau channel 24 jam | Post baru langsung diproses |
 | Kejar post yang terlewat | Bot mati / koneksi putus → saat hidup lagi, post ≤ 6 jam terakhir tetap diproses (tanpa dobel) |
 | Sambung ulang listener | Koneksi Telegram putus → dilapor, disambung ulang sendiri |
-| Pantau tweet project opt-in | Tweet baru project opt-in langsung dikomentari, tanpa menunggu post channel (maks. 2/hari per project) |
+| Pantau tweet project opt-in | Tweet baru project opt-in langsung dikomentari, tanpa menunggu post channel |
+| Hanya tweet terbaru | Project punya 10+ tweet → hanya 3 tweet **terbaru** yang dikomentari, yang paling baru duluan (`/filter tweetsPerProject 3`), maks. 3 komentar/hari per project (`/auto maxRepliesPerProjectPerDay 3`) |
+| Jeda komentar | Komentar ke project yang sama minimal 5 menit sekali (`/jeda project 5`); project lain tetap jalan. Jeda antar semua aksi: `/jeda 5` atau acak `/jeda 3 6` |
 | Verifikasi opt-in | Project cukup pasang kode di bio; bot cek sendiri tiap 10 menit, kode kedaluwarsa setelah 3 hari |
 | Rate limit X (429) | Bot jeda sampai waktu reset dari X (termasuk batas 24 jam), lalu **jalan lagi sendiri** dan mengulang aksi yang gagal |
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
@@ -71,7 +73,8 @@ pm2 logs xagent                  # lihat log
 | `/optins` `/addoptin` `/deloptin` | Daftar project opt-in (+ yang menunggu verifikasi) |
 | `/filter` `/filter minFollowers 1000` | minFollowers, minAgeDays, blacklist, cooldownDays, tweetsPerProject, maxTweetAgeHours |
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay |
-| `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
+| `/jeda` `/jeda 5` `/jeda 3 6` `/jeda project 10` | Jeda dalam menit: antar semua aksi (tetap / acak) dan antar komentar ke project yang sama |
+| `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, replyGapMin, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
 | `/pause` `/resume` `/status` `/xstatus` | Kontrol bot |
 
 ## Yang sengaja TIDAK diotomatisasi

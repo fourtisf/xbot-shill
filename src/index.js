@@ -105,6 +105,21 @@ function pickTemplate() {
 let running = false;
 const lastHour = () => db.sentAt.filter((t) => t > Date.now() - 3600_000).length;
 const jobLabel = (j) => `${j.type === 'reply' ? 'Komentar ke' : 'Tweet tentang'} @${j.username}`;
+const newestFirst = (a, b) => (BigInt(b.id ?? b.tweetId) > BigInt(a.id ?? a.tweetId) ? 1 : -1);
+const lastReply = (h) => db.replyLog[h]?.at(-1) || 0;
+// Aksi berikutnya: project yang masih dalam jeda dilewati (project lain tetap jalan),
+// dan untuk project yang sama tweet terbaru dikomentari duluan
+function nextJob() {
+  const gap = db.auto.replyGapMin * 60_000;
+  const first = db.queue.find((j) => j.type !== 'reply' || Date.now() - lastReply(j.handle) >= gap);
+  if (first?.type !== 'reply') return first;
+  return db.queue.filter((j) => j.type === 'reply' && j.handle === first.handle).sort(newestFirst)[0];
+}
+const fmtSec = (s) => (s >= 60 ? `${+(s / 60).toFixed(1)} menit` : `${s} detik`);
+const fmtGap = () => {
+  const { minDelaySec: a, maxDelaySec: b } = db.limits;
+  return a === b ? fmtSec(a) : `${fmtSec(a)}–${fmtSec(b)} (acak)`;
+};
 function enqueue(job) {
   if (job.type === 'reply' && (db.repliedTweets.includes(job.tweetId) || db.queue.some((j) => j.tweetId === job.tweetId))) return;
   db.queue.push(job); save();
@@ -113,11 +128,13 @@ function enqueue(job) {
 async function runQueue() {
   if (running) return;
   running = true;
+  await Promise.resolve(); // biarkan semua enqueue dari satu batch masuk dulu
   while (db.queue.length) {
     if (db.paused || limited()) { await sleep(POLL); continue; }
     db.sentAt = db.sentAt.filter((t) => t > Date.now() - DAY);
     if (lastHour() >= db.limits.maxPerHour || db.sentAt.length >= db.limits.maxPerDay) { await sleep(TICK); continue; }
-    const job = db.queue[0];
+    const job = nextJob();
+    if (!job) { await sleep(POLL); continue; } // semua sedang menunggu jeda per project
     let acted = true, retry = false;
     try {
       acted = (await runJob(job)) !== false;
@@ -125,7 +142,7 @@ async function runQueue() {
       console.error('job error:', e);
       retry = (await xError(e, jobLabel(job))) && (job.tries = (job.tries || 0) + 1) < 3;
     }
-    if (!retry) db.queue.shift();
+    if (!retry && db.queue.includes(job)) db.queue.splice(db.queue.indexOf(job), 1);
     if (acted) db.sentAt.push(Date.now());
     save();
     if (acted && db.queue.length) await sleep(rand(db.limits.minDelaySec, db.limits.maxDelaySec) * 1000);
@@ -145,7 +162,10 @@ async function runJob(j) {
     if (!db.optins[j.handle] || db.repliedTweets.includes(j.tweetId)) return false;
     const log = (db.replyLog[j.handle] || []).filter((t) => t > Date.now() - DAY);
     if (log.length >= db.auto.maxRepliesPerProjectPerDay) {
-      await report(`ℹ️ @${esc(j.username)} sudah ${log.length} komentar dalam 24 jam (maxRepliesPerProjectPerDay) — tweet dilewati`);
+      // Batas harian project tercapai: sisa antrian project ini dibuang sekaligus
+      const rest = db.queue.filter((q) => q !== j && q.type === 'reply' && q.handle === j.handle);
+      db.queue = db.queue.filter((q) => !rest.includes(q));
+      await report(`ℹ️ @${esc(j.username)} sudah ${log.length} komentar dalam 24 jam (maxRepliesPerProjectPerDay) — ${rest.length + 1} tweet dilewati`);
       return false;
     }
     const body = fill(pickTemplate(), vars);
@@ -206,13 +226,14 @@ async function processProject(handle, channelName, t0) {
     if (db.optins[handle]) {
       // Project opt-in -> komentar otomatis
       const tl = await x.v2.userTimeline(user.id, {
-        max_results: 5, exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at']
+        max_results: Math.min(100, Math.max(5, f.tweetsPerProject)), exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at']
       });
       db.history[handle] = Date.now(); save(); // dicatat setelah timeline sukses, supaya bisa diulang kalau gagal
       const maxAge = f.maxTweetAgeHours * 3600_000;
       const tweets = (tl.tweets || [])
         .filter((t) => Date.now() - new Date(t.created_at) < maxAge)
-        .slice(0, f.tweetsPerProject);
+        .sort(newestFirst)
+        .slice(0, f.tweetsPerProject); // hanya tweet terbaru
       if (!tweets.length) return report(`ℹ️ <b>@${esc(handle)}</b> (opt-in) tidak punya tweet baru ≤ ${f.maxTweetAgeHours} jam`);
       for (const tw of tweets) {
         enqueue({ ...base, type: 'reply', tweetId: tw.id, tweetText: tw.text, at: new Date(tw.created_at).getTime(), t0 });
@@ -359,14 +380,21 @@ async function watchOptins() {
     });
     newest = maxId(newest, res.meta?.newest_id);
     const users = new Map((res.includes?.users || []).map((u) => [u.id, u]));
-    for (const tw of [...(res.tweets || [])].reverse()) {
+    const perProject = new Map();
+    for (const tw of res.tweets || []) {
       const u = users.get(tw.author_id);
       const at = new Date(tw.created_at).getTime();
       if (!u || !db.optins[u.username.toLowerCase()] || Date.now() - at > maxAge) continue;
-      enqueue({
-        type: 'reply', handle: u.username.toLowerCase(), username: u.username, name: u.name, channel: '',
-        source: 'tweet baru (pantauan opt-in)', tweetId: tw.id, tweetText: tw.text, at
-      });
+      perProject.set(u, [...(perProject.get(u) || []), { ...tw, at }]);
+    }
+    // Project yang tweet banyak sekaligus: hanya tweetsPerProject tweet terbaru
+    for (const [u, tweets] of perProject) {
+      for (const tw of tweets.sort(newestFirst).slice(0, db.filter.tweetsPerProject)) {
+        enqueue({
+          type: 'reply', handle: u.username.toLowerCase(), username: u.username, name: u.name, channel: '',
+          source: 'tweet baru (pantauan opt-in)', tweetId: tw.id, tweetText: tw.text, at: tw.at
+        });
+      }
     }
   }
   if (newest !== db.watchSinceId) { db.watchSinceId = newest; save(); }
@@ -477,6 +505,8 @@ const HELP = `<b>Fourtis X Agent</b>
 <b>Filter & batas</b>
 /filter — lihat · /filter minFollowers 500
 /limits — lihat · /limits maxPerHour 20
+/filter tweetsPerProject 3 — jumlah tweet terbaru yang dikomentari
+/jeda — lihat · /jeda 5 · /jeda 3 6 (acak) · /jeda project 10
 
 <b>Otomatis</b>
 /auto — lihat · /auto watchOptins false · /auto dailyReportHour 8
@@ -646,6 +676,29 @@ bot.command('filter', (ctx) => kv(db.filter, ctx, 'Filter'));
 bot.command('limits', (ctx) => kv(db.limits, ctx, 'Batas'));
 bot.command('auto', (ctx) => kv(db.auto, ctx, 'Otomatis'));
 
+// Jeda dalam menit (lebih mudah daripada /limits minDelaySec)
+bot.command('jeda', (ctx) => {
+  const [, a, b] = ctx.message.text.split(/\s+/);
+  if (!a) {
+    return ctx.reply(
+      `Jeda antar aksi (semua project): ${fmtGap()}\nJeda komentar ke project yang sama: ${db.auto.replyGapMin} menit\n\n` +
+      'Ubah:\n/jeda 5 — tiap 5 menit\n/jeda 3 6 — acak 3–6 menit\n/jeda project 10 — project yang sama maks. 1 komentar per 10 menit'
+    );
+  }
+  if (a === 'project') {
+    const m = Number(b);
+    if (b === undefined || !(m >= 0)) return ctx.reply('Format: /jeda project 10');
+    db.auto.replyGapMin = m; save();
+    return ctx.reply(`✅ Komentar ke project yang sama minimal ${m} menit sekali.`);
+  }
+  const lo = Number(a), hi = b === undefined ? lo : Number(b);
+  if (!(lo >= 0) || !(hi >= lo)) return ctx.reply('Format: /jeda 5  atau  /jeda 3 6');
+  db.limits.minDelaySec = Math.round(lo * 60);
+  db.limits.maxDelaySec = Math.round(hi * 60);
+  save();
+  ctx.reply(`✅ Jeda antar aksi: ${fmtGap()}.`);
+});
+
 bot.command('pause', (ctx) => { db.paused = true; save(); ctx.reply('⏸ Bot di-pause.'); });
 bot.command('resume', (ctx) => { db.paused = false; db.pausedUntil = 0; save(); ctx.reply('▶️ Bot jalan lagi.'); runQueue(); });
 bot.command('status', (ctx) => ctx.replyWithHTML(
@@ -655,6 +708,8 @@ bot.command('status', (ctx) => ctx.replyWithHTML(
   `Channel laporan: ${db.reportChat ? '✅' : '❌'}\n` +
   `Opt-in: ${Object.keys(db.optins).length} (menunggu verifikasi: ${Object.keys(db.pending).length})\n` +
   `Pantau tweet opt-in: ${db.auto.watchOptins ? 'ON' : 'OFF'}\nTemplate: ${db.templates.length}\nAntrian: ${db.queue.length}\n` +
+  `Komentar per project: ${db.filter.tweetsPerProject} tweet terbaru, maks. ${db.auto.maxRepliesPerProjectPerDay}/hari\n` +
+  `Jeda: ${fmtGap()} antar aksi · ${db.auto.replyGapMin} menit per project\n` +
   `Aksi X 1 jam: ${lastHour()}/${db.limits.maxPerHour} · 24 jam: ${db.sentAt.filter((t) => t > Date.now() - DAY).length}/${db.limits.maxPerDay}`
 ));
 

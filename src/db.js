@@ -25,7 +25,7 @@ const defaults = {
     minAgeDays: 14,
     blacklist: ['scam', 'rug'],
     cooldownDays: 7,
-    tweetsPerProject: 1,
+    tweetsPerProject: 3, // berapa tweet TERBARU yang dikomentari per project
     maxTweetAgeHours: 48,
     useMentions: false
   },
@@ -33,7 +33,8 @@ const defaults = {
   auto: {
     watchOptins: true, // komentar otomatis di tweet baru project opt-in, tanpa menunggu post channel
     watchIntervalMin: 10,
-    maxRepliesPerProjectPerDay: 2,
+    maxRepliesPerProjectPerDay: 3,
+    replyGapMin: 5, // jeda minimal antar komentar ke project yang sama (menit)
     autoVerify: true, // cek bio project yang /optin tiap beberapa menit, tanpa perlu /verify
     verifyIntervalMin: 10,
     pendingExpireDays: 3,

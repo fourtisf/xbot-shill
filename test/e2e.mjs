@@ -76,8 +76,8 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   optins: { optproj: { at: now, via: 'admin' } },
   lastSeen: { 1001: 3 },
   queue: [{ type: 'tweet', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', at: now }],
-  limits: { minDelaySec: 0, maxDelaySec: 0 },
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23 },
+  limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 }, // test melakukan banyak aksi
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0 },
   lastDaily: new Date().toDateString()
 }));
 
@@ -309,13 +309,69 @@ await test('since_id lebih tua dari 6 hari (bot lama mati) → mulai dari sekara
   db.watchSinceId = saved;
 });
 
-await test('batas komentar per project per hari', async () => {
+await test('batas komentar per project per hari → sisa antrian project dibuang sekaligus', async () => {
+  db.auto.maxRepliesPerProjectPerDay = 2; // OptProj sudah 2 komentar
+  const extra = [T2, snow(now, 3), snow(now, 4)];
   M.x.searchResults.push({
-    tweets: [{ id: T2, text: 'another one', author_id: 'u1', created_at: new Date().toISOString() }],
+    tweets: extra.map((id) => ({ id, text: 'another one', author_id: 'u1', created_at: new Date().toISOString() })),
     users: [{ id: 'u1', username: 'OptProj', name: 'Opt Project' }]
   });
-  await reportMatching('maxRepliesPerProjectPerDay');
-  assert.equal(xcalls('reply').filter((c) => c[2] === T2).length, 0);
+  try {
+    await reportMatching('3 tweet dilewati');
+    assert.equal(reports().filter((r) => r.includes('tweet dilewati')).length, 1); // satu laporan, bukan tiga
+    assert.equal(xcalls('reply').filter((c) => extra.includes(c[2])).length, 0);
+    assert.equal(db.queue.filter((j) => j.handle === 'optproj').length, 0);
+  } finally {
+    db.auto.maxRepliesPerProjectPerDay = 3;
+  }
+});
+
+// 10 tweet, index 9 = paling baru
+const tenTweets = (seq, text) => Array.from({ length: 10 }, (_, i) => ({
+  id: snow(now - (10 - i) * 60_000, seq + i), text: `${text} #${i}`, created_at: new Date(now - (10 - i) * 60_000).toISOString()
+}));
+
+await test('project dengan 10 tweet (dari channel) → hanya 3 terbaru, yang terbaru duluan', async () => {
+  users.manyproj = user('u20', 'ManyProj', 'Many Project');
+  db.optins.manyproj = { at: Date.now(), via: 'admin' };
+  const tweets = tenTweets(100, 'many');
+  M.x.timelines.u20 = [...tweets].reverse(); // X mengirim dari yang terbaru
+  post(alpha, 'x.com/ManyProj');
+  const newest3 = tweets.slice(-3).reverse().map((t) => t.id);
+  await until(() => xcalls('reply').filter((c) => c[1].includes('Many Project')).length === 3, '3 komentar ManyProj');
+  await tick(5);
+  assert.deepEqual(xcalls('reply').filter((c) => c[1].includes('Many Project')).map((c) => c[2]), newest3);
+});
+
+await test('project opt-in tweet 10x sekaligus (pantauan) → hanya 3 terbaru, yang terbaru duluan', async () => {
+  users.watchmany = user('u21', 'WatchMany', 'Watch Many');
+  db.optins.watchmany = { at: Date.now(), via: 'admin' };
+  const tweets = tenTweets(200, 'burst');
+  M.x.searchResults.push({ tweets: [...tweets].reverse().map((t) => ({ ...t, author_id: 'u21' })), users: [users.watchmany] });
+  const newest3 = tweets.slice(-3).reverse().map((t) => t.id);
+  await until(() => xcalls('reply').filter((c) => c[1].includes('Watch Many')).length === 3, '3 komentar WatchMany');
+  await tick(5);
+  assert.deepEqual(xcalls('reply').filter((c) => c[1].includes('Watch Many')).map((c) => c[2]), newest3);
+});
+
+await test('jeda per project: komentar ke project yang sama berjarak, project lain tidak ikut tertahan', async () => {
+  db.auto.replyGapMin = 0.02; // 1,2 detik (di produksi: menit)
+  users.gapproj = user('u22', 'GapProj', 'Gap Project');
+  users.otherproj = user('u23', 'OtherProj', 'Other Project');
+  db.optins.gapproj = { at: Date.now(), via: 'admin' };
+  M.x.timelines.u22 = tenTweets(300, 'gap').reverse();
+  try {
+  post(alpha, 'x.com/GapProj');
+  await until(() => xcalls('reply').some((c) => c[1].includes('Gap Project')), 'komentar GapProj pertama');
+  post(alpha, 'x.com/OtherProj');
+  await until(() => xcalls('reply').filter((c) => c[1].includes('Gap Project')).length === 3, '3 komentar GapProj', 8000);
+  const times = xcalls('reply').filter((c) => c[1].includes('Gap Project')).map((c) => c[3]);
+  assert.ok(times[1] - times[0] >= 1150 && times[2] - times[1] >= 1150, `jarak ${times[1] - times[0]}ms, ${times[2] - times[1]}ms`);
+  const other = xcalls('tweet').find((c) => c[1].includes('Other Project'));
+  assert.ok(other && other[2] < times[1], 'project lain jalan saat GapProj menunggu jeda');
+  } finally {
+    db.auto.replyGapMin = 0;
+  }
 });
 
 await test('project opt-out saat antre → komentar dibatalkan', async () => {
@@ -323,7 +379,7 @@ await test('project opt-out saat antre → komentar dibatalkan', async () => {
   post(alpha, 'x.com/VerProj');
   await until(() => db.queue.some((j) => j.handle === 'verproj'), 'reply VerProj masuk antrian');
   assert.match(await dm(333, '/optout @VerProj'), /sudah opt-out/);
-  db.limits.maxPerHour = 20;
+  db.limits.maxPerHour = 1000;
   await until(() => db.queue.length === 0, 'antrian kosong');
   assert.equal(xcalls('reply').filter((c) => c[2] === '1700000000000000010').length, 0);
 });
@@ -395,7 +451,31 @@ await test('/auto & /limits bisa diubah, nilai bukan angka ditolak', async () =>
   assert.match(await dm(ADMIN, '/auto maxRepliesPerProjectPerDay 3'), /= 3/);
   assert.equal(db.auto.maxRepliesPerProjectPerDay, 3);
   assert.match(await dm(ADMIN, '/limits maxPerDay abc'), /harus angka/);
-  assert.equal(db.limits.maxPerDay, 50);
+  assert.equal(db.limits.maxPerDay, 1000);
+});
+
+await test('/jeda: atur jeda dalam menit', async () => {
+  try {
+  assert.match(await dm(ADMIN, '/jeda'), /Jeda antar aksi/);
+  assert.match(await dm(ADMIN, '/jeda 5'), /5 menit/);
+  assert.equal(db.limits.minDelaySec, 300);
+  assert.equal(db.limits.maxDelaySec, 300);
+  assert.match(await dm(ADMIN, '/jeda 3 6'), /3 menit–6 menit \(acak\)/);
+  assert.equal(db.limits.minDelaySec, 180);
+  assert.equal(db.limits.maxDelaySec, 360);
+  assert.match(await dm(ADMIN, '/jeda project 10'), /minimal 10 menit/);
+  assert.equal(db.auto.replyGapMin, 10);
+  assert.match(await dm(ADMIN, '/jeda abc'), /Format/);
+  assert.match(await dm(ADMIN, '/jeda 6 3'), /Format/);
+  assert.match(await dm(ADMIN, '/filter tweetsPerProject 2'), /= 2/);
+  const s = await dm(ADMIN, '/status');
+  assert.match(s, /Komentar per project: 2 tweet terbaru, maks\. 3\/hari/);
+  assert.match(s, /Jeda: 3 menit–6 menit \(acak\) antar aksi · 10 menit per project/);
+  } finally {
+    Object.assign(db.limits, { minDelaySec: 0, maxDelaySec: 0 });
+    db.auto.replyGapMin = 0;
+    db.filter.tweetsPerProject = 3;
+  }
 });
 
 await test('/status lengkap', async () => {

@@ -28,17 +28,17 @@ export class TwitterApi {
           call('usersByUsernames', hs);
           return { data: hs.map((h) => M.x.users[h]).filter(Boolean) };
         },
-        async userTimeline(id) {
-          call('userTimeline', id);
-          return { tweets: M.x.timelines[id] || [] };
+        async userTimeline(id, opts = {}) {
+          call('userTimeline', id, opts);
+          return { tweets: (M.x.timelines[id] || []).slice(0, opts.max_results ?? 10) };
         },
         async reply(text, id) {
-          call('reply', text, id);
+          call('reply', text, id, Date.now());
           failIfQueued('reply');
           return { data: { id: 'r' + ++M.x.n, text } };
         },
         async tweet(text) {
-          call('tweet', text);
+          call('tweet', text, Date.now());
           failIfQueued('tweet');
           return { data: { id: 't' + ++M.x.n, text } };
         },
