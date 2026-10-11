@@ -67,7 +67,7 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 ```bash
 npm install
 cp .env.example .env      # isi BOT_TOKEN, ADMIN_IDS, TG_API_ID, TG_API_HASH, TZ
-npm run login             # login akun listener, tempel TG_SESSION ke .env
+npm run login             # login akun listener, TG_SESSION otomatis tersimpan ke .env
 npm test                  # opsional: test end-to-end (tanpa akun asli)
 
 npm install -g pm2
