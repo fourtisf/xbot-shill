@@ -254,6 +254,9 @@ async function markMentionOnly(b) {
   await report(`ℹ️ X hanya mengizinkan akun ${esc(brandLabel(b))} berkomentar lewat API ke tweet yang me-mention akun itu.\n` +
     'Tweet lain: komentar tetap disiapkan di laporan, kirim lewat tombol ✍️ Balas di X (buka X sebagai akun brand itu, lalu Reply).');
 }
+// Like / Follow ditolak X (paket API / izin app): tombolnya jadi link ke X (dicoba lagi lewat API setelah 7 hari)
+const viaX = (b, a) => Date.now() - (db.brands[b]?.viaX?.[a] || 0) < 7 * DAY;
+const xIntent = { l: (tid) => `https://x.com/intent/like?tweet_id=${tid}`, f: (tid, m) => `https://x.com/intent/follow?screen_name=${m.username}` };
 // Tweet yang tidak bisa dikomentari lewat API: komentar disiapkan di laporan, admin kirim dari app X
 async function manualReply(j, tpl, body) {
   useTemplate(j.handle, tpl);
@@ -394,7 +397,8 @@ async function notOptedIn(handle, channelName) {
       `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
       brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
       '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.' +
-      (brands.some((b) => !apiCanReply(b, db.manual[tw.id].mentions)) ? ' ✍️ Balas di X = buka X dengan komentar terisi, lalu Reply.' : '') + '</i>',
+      (brands.some((b) => !apiCanReply(b, db.manual[tw.id].mentions) || viaX(b, 'l') || viaX(b, 'f'))
+        ? ' Tombol "… di X" = buka X (komentar sudah terisi) sebagai akun brand itu, lalu tekan sendiri.' : '') + '</i>',
       actionRows(tw.id)
     );
   } catch (e) {
@@ -412,9 +416,14 @@ function actionRows(tid) {
   const multi = m.brands.length > 1;
   const rows = m.brands.filter((b) => db.brands[b]).map((b) => ['c', 'l', 'f']
     .filter((a) => (a !== 'c' || m.texts[b]) && (a !== 'f' || m.authorId))
-    .map((a) => (a === 'c' && !m.done[`c:${b}`] && !apiCanReply(b, m.mentions)
-      ? Markup.button.url(`✍️ Balas di X · ${brandName(b)}`, replyIntent(tid, m.texts[b]))
-      : btn(`${ACT_LABEL[a][m.done[`${a}:${b}`] ? 1 : 0]}${a === 'c' || multi ? ` · ${brandName(b)}` : ''}`, `mx:${a}:${b}:${tid}`))));
+    .map((a) => {
+      const done = m.done[`${a}:${b}`];
+      const name = a === 'c' || multi ? ` · ${brandName(b)}` : '';
+      // Aksi yang ditolak X lewat API: link ke X (admin yang tekan di sana)
+      if (!done && a === 'c' && !apiCanReply(b, m.mentions)) return Markup.button.url(`✍️ Balas di X${name}`, replyIntent(tid, m.texts[b]));
+      if (!done && a !== 'c' && viaX(b, a)) return Markup.button.url(`${ACT_LABEL[a][0]} di X${name}`, xIntent[a](tid, m));
+      return btn(`${ACT_LABEL[a][done ? 1 : 0]}${name}`, `mx:${a}:${b}:${tid}`);
+    }));
   const first = m.brands.find((b) => m.texts[b] && apiCanReply(b, m.mentions)); // ✍️ Balas di X per brand sudah ada
   rows.push([
     ...(first ? [Markup.button.url('✍️ Ubah di X', replyIntent(tid, m.texts[first]))] : []),
@@ -434,11 +443,14 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   const m = db.manual[tid];
   if (!m || !m.brands.includes(b)) return alert('Tombol ini sudah kedaluwarsa (lebih dari 3 hari).');
   if (m.done[key]) return ctx.answerCbQuery('Sudah dilakukan ✅').catch(() => {});
-  const toIntent = async () => {
+  const verb = { c: 'Reply', l: 'Like', f: 'Follow' }[a];
+  const toX = async (why) => {
     await ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
-    return alert(`X hanya mengizinkan komentar lewat API ke tweet yang me-mention akun ${brandName(b)}. Pakai tombol ✍️ Balas di X · ${brandName(b)} (buka X sebagai akun itu, lalu Reply).`);
+    return alert(`${why} Tombolnya jadi link ke X: buka sebagai akun ${brandName(b)}, lalu tekan ${verb}.`);
   };
-  if (a === 'c' && !apiCanReply(b, m.mentions)) return toIntent(); // tombol lama dari sebelum X menolak
+  const mentionWhy = `X hanya mengizinkan komentar lewat API ke tweet yang me-mention akun ${brandName(b)}.`;
+  // Tombol lama dari sebelum X menolak: langsung ke link X, tanpa API
+  if (a === 'c' ? !apiCanReply(b, m.mentions) : viaX(b, a)) return toX(a === 'c' ? mentionWhy : `X menolak ${verb} lewat API untuk akun ${brandName(b)}.`);
   if (!clients[b]) return alert(`Akun X ${brandName(b)} belum tersambung.`);
   if (isDown(b) || limited(b)) return alert(`Akun ${brandName(b)} sedang jeda/dihentikan — coba lagi nanti.`);
   if (!withinLimits(b)) return alert(`Batas akun ${brandName(b)} tercapai (${db.limits.maxPerHour}/jam, ${db.limits.maxPerDay}/hari). Ubah di /menu → Jeda & Batas.`);
@@ -454,7 +466,12 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
     else await x.follow(await meId(b), m.authorId);
   } catch (e) {
     console.error('aksi tombol:', e);
-    if (a === 'c' && mentionOnlyErr(e)) { await markMentionOnly(b); return toIntent(); }
+    if (a === 'c' && mentionOnlyErr(e)) { await markMentionOnly(b); return toX(mentionWhy); }
+    // Like / Follow tidak diizinkan untuk app / paket API ini (bukan karena diblokir project)
+    if (a !== 'c' && e?.code === 403 && !/blocked/i.test(errText(e))) {
+      (db.brands[b].viaX ||= {})[a] = Date.now(); save();
+      return toX(`X menolak ${verb} lewat API (${String(e?.data?.detail || e?.data?.title || e.message).slice(0, 60)}).`);
+    }
     if (e?.code === 429) await xError(e, `${ACT_LABEL[a][0]} @${m.username}`, b);
     return alert(`❌ ${a === 'c' && cannotReply(e)
       ? 'X menolak komentar lewat API untuk tweet ini (project belum pernah me-mention / berinteraksi dengan akun brand). Pakai tombol ✍️ Ubah di X.'
@@ -1099,7 +1116,7 @@ async function setAccount(ctx, brand, keys) {
   const isNew = !db.brands[brand];
   db.brands[brand] ||= newBrand(brand);
   Object.assign(db.brands[brand], { x: creds, username: me.username, userId: me.id });
-  delete db.brandDown[brand]; delete db.brands[brand].mentionOnly; failStreak[brand] = 0;
+  delete db.brandDown[brand]; delete db.brands[brand].mentionOnly; delete db.brands[brand].viaX; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
     `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n` +

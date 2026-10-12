@@ -142,5 +142,7 @@ Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
   **me-mention akun brand** atau tweet milik akun itu sendiri. Ini aturan sisi X dan tidak bisa diakali dari bot. Bot otomatis
   menyesuaikan: tweet yang me-mention akun brand tetap dikomentari otomatis; tweet lain disiapkan di laporan dengan tombol
   **✍️ Balas di X · brand** (membuka X dengan komentar sudah terisi; pastikan sedang login sebagai akun brand itu, lalu tekan Reply).
+- **Like / Follow ditolak X lewat API** (paket API / izin app): tombolnya otomatis jadi **❤️ Like di X** / **👤 Follow di X**
+  (link ke X, tekan sendiri sebagai akun brand itu). Dicoba lagi lewat API setelah 7 hari / saat akun diganti.
 - X API berbayar: baca profil, timeline, dan pencarian (pantauan tweet opt-in) butuh minimal paket **Basic**. Pantauan memakai satu pencarian untuk banyak project sekaligus dan hanya membaca tweet baru (`since_id`); matikan dengan `/auto watchOptins false` kalau kuota baca menipis.
 - `npm test` menjalankan bot asli dengan Telegram & X tiruan untuk memastikan semua alur jalan.

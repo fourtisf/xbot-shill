@@ -668,15 +668,35 @@ await test('komentar 1-tap: X hanya mengizinkan tweet yang me-mention → tombol
     M.x.timelines.u96 = [{ id: tid2, text: 'another update', created_at: new Date().toISOString() }];
     post(alpha, 'x.com/TapMentionTwo');
     const r = await reportMatching('<b>@TapMentionTwo</b> belum opt-in — siap dikomentari');
-    assert.match(r, /✍️ Balas di X = buka X dengan komentar terisi/);
+    assert.match(r, /Tombol "… di X" = buka X \(komentar sudah terisi\)/);
     assert.equal(keyboardOf(r)[0][0].text, '✍️ Balas di X · Fourtis');
     const before = xcalls('reply').length;
     await tap(ADMIN, `mx:c:fourtis:${tid2}`);
     assert.equal(xcalls('reply').length, before);
-    assert.match(lastAnswer(), /Balas di X · Fourtis/);
+    assert.match(lastAnswer(), /me-mention akun Fourtis/);
+
+    // Like ditolak X lewat API (paket / izin app) → tombol jadi link ❤️ Like di X, tombol lama tidak memanggil API lagi
+    M.x.failNext.like = xErr(403, 'You are not permitted to perform this action.');
+    await tap(ADMIN, `mx:l:fourtis:${tid2}`);
+    assert.match(lastAnswer(), /X menolak Like lewat API[\s\S]*tekan Like/);
+    const like = lastEdit()[0].find((k) => k.text === '❤️ Like di X · Fourtis');
+    assert.equal(like.url, `https://x.com/intent/like?tweet_id=${tid2}`);
+    const likes = xcalls('like').length;
+    await tap(ADMIN, `mx:l:fourtis:${tid}`);
+    assert.equal(xcalls('like').length, likes);
+    assert.ok(!db.manual[tid].done['l:fourtis']);
+    // Diblokir project bukan batasan app: Follow tetap lewat API di laporan lain
+    M.x.failNext.follow = xErr(403, 'You have been blocked from following this account.');
+    await tap(ADMIN, `mx:f:fourtis:${tid2}`);
+    assert.ok(!db.brands.fourtis.viaX.f);
+    await tap(ADMIN, `mx:f:fourtis:${tid}`);
+    assert.equal(xcalls('follow').at(-1)[2], 'u97');
+    assert.ok(db.manual[tid].done['f:fourtis']);
+    assert.ok(!db.brandDown.fourtis);
   } finally {
     db.auto.manualAssist = false;
     delete db.brands.fourtis.mentionOnly;
+    delete db.brands.fourtis.viaX;
   }
 });
 
