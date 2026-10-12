@@ -5,7 +5,7 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
 - **Project belum opt-in** → bot TIDAK berkomentar sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis) bot mencari tweet terbarunya,
   menyiapkan komentar per brand, dan laporan berisi tombol **💬 Kirim · ❤️ Like · 👤 Follow** per brand: 1 tekan di Telegram = 1 aksi dari akun brand
-  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, pakai tombol ✍️ Ubah di X. Kalau OFF: hanya dilaporkan (tanpa kuota API X)
+  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, tombolnya jadi **✍️ Balas di X** (lihat Catatan). Kalau OFF: hanya dilaporkan (tanpa kuota API X)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
@@ -57,6 +57,7 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 | Verifikasi opt-in | Project cukup pasang kode di bio; bot cek sendiri tiap 10 menit, kode kedaluwarsa setelah 3 hari |
 | Rate limit X (429) | Akun itu jeda sampai waktu reset dari X (termasuk batas 24 jam), lalu **jalan lagi sendiri**; antrian dilanjutkan mulai dari tweet **terbaru** |
 | Tweet tidak bisa dibalas | Balasan dibatasi / tweet dihapus → akun yang **sama** pindah ke tweet terbaru lain dari project itu (maks. 3x/hari). Tweet "hanya akun yang di-mention" dilewati dari awal |
+| X hanya izinkan tweet yang me-mention | X menolak komentar API ("You can only reply to or quote posts where you are mentioned…") → brand ditandai, tweet yang tidak me-mention akun brand tidak dicoba lewat API lagi; komentarnya disiapkan di laporan dengan tombol **✍️ Balas di X**. Tidak dihitung ke rem darurat. Dicek ulang setelah 7 hari / saat akun diganti |
 | Project memblokir akun | Opt-in ke brand itu dihentikan otomatis — tidak dicoba lewat akun lain |
 | Rem darurat per akun | Akun ditolak X (key salah, dikunci, dibatasi) → akun itu **berhenti otomatis**, admin dikabari di channel laporan + DM; akun lain tetap jalan. Lanjut lagi: `/resume brand` |
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
@@ -137,5 +138,9 @@ Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
 ## Catatan
 
 - Data tersimpan di `data.json` (berisi key X — jangan dibagikan / di-commit, sudah ada di `.gitignore`).
+- **Batasan komentar lewat API X**: X bisa membatasi akun (atau app) sehingga komentar lewat API hanya boleh ke tweet yang
+  **me-mention akun brand** atau tweet milik akun itu sendiri. Ini aturan sisi X dan tidak bisa diakali dari bot. Bot otomatis
+  menyesuaikan: tweet yang me-mention akun brand tetap dikomentari otomatis; tweet lain disiapkan di laporan dengan tombol
+  **✍️ Balas di X · brand** (membuka X dengan komentar sudah terisi; pastikan sedang login sebagai akun brand itu, lalu tekan Reply).
 - X API berbayar: baca profil, timeline, dan pencarian (pantauan tweet opt-in) butuh minimal paket **Basic**. Pantauan memakai satu pencarian untuk banyak project sekaligus dan hanya membaca tweet baru (`since_id`); matikan dengan `/auto watchOptins false` kalau kuota baca menipis.
 - `npm test` menjalankan bot asli dengan Telegram & X tiruan untuk memastikan semua alur jalan.

@@ -240,6 +240,38 @@ const freshTweet = (t) => Date.now() - new Date(t.created_at) < db.filter.maxTwe
 const canReplyTo = (t, brand) => t.reply_settings !== 'mentionedUsers' ||
   !!db.brands[brand]?.username && t.text.toLowerCase().includes('@' + db.brands[brand].username.toLowerCase());
 
+// X API: akun ini hanya boleh berkomentar ke tweet yang me-mention akun brand (atau tweet sendiri).
+// Ditolak sekali → brand ditandai (dicoba lagi lewat API setelah 7 hari); tweet lain cukup disiapkan, admin yang
+// kirim dari app X lewat tombol ✍️ Balas di X. Bukan masalah akun: tidak dihitung ke rem darurat
+const mentionOnlyErr = (e) => e?.code === 403 && /only reply to or quote posts where you are mentioned/i.test(errText(e));
+const mentionsOf = (text = '') => (text.match(/@\w{1,15}/g) || []).map((m) => m.slice(1).toLowerCase());
+const mentionOnly = (b) => Date.now() - (db.brands[b]?.mentionOnly || 0) < 7 * DAY;
+const apiCanReply = (b, mentions = []) => !mentionOnly(b) || mentions.includes(db.brands[b].username?.toLowerCase());
+const replyIntent = (tid, text) => `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(text)}`;
+async function markMentionOnly(b) {
+  if (mentionOnly(b)) return;
+  db.brands[b].mentionOnly = Date.now(); save();
+  await report(`ℹ️ X hanya mengizinkan akun ${esc(brandLabel(b))} berkomentar lewat API ke tweet yang me-mention akun itu.\n` +
+    'Tweet lain: komentar tetap disiapkan di laporan, kirim lewat tombol ✍️ Balas di X (buka X sebagai akun brand itu, lalu Reply).');
+}
+// Tweet yang tidak bisa dikomentari lewat API: komentar disiapkan di laporan, admin kirim dari app X
+async function manualReply(j, tpl, body) {
+  useTemplate(j.handle, tpl);
+  db.repliedTweets = [...db.repliedTweets.slice(-999), j.tweetId]; // tidak diantre ulang
+  db.manual[j.tweetId] = {
+    username: j.username, authorId: j.userId, at: Date.now(), brands: [j.brand],
+    texts: { [j.brand]: body }, done: {}, mentions: mentionsOf(j.tweetText)
+  };
+  stat('manual');
+  await report(
+    `✍️ <b>Komentar siap</b> · ${esc(brandLabel(j.brand))}\nProject: <b>@${esc(j.username)}</b> (opt-in)\nSumber: ${esc(j.source || j.channel)}\n` +
+    `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n` +
+    `<i>Tweet ini tidak me-mention akun brand, jadi X tidak mengizinkan komentar lewat API. Tekan ✍️ Balas di X, lalu Reply.</i>`,
+    actionRows(j.tweetId)
+  );
+  return false;
+}
+
 // Project memblokir akun brand = tidak mau dikomentari lagi: opt-in brand itu dihentikan, tidak dicoba lewat akun lain
 async function stopProject(j, e) {
   if (brandOf(db.optins[j.handle]) === j.brand) delete db.optins[j.handle];
@@ -285,7 +317,15 @@ async function runJob(j) {
   const tpl = pickTemplate(brand.templates, j.handle, true);
   if (!tpl) return dropProject(j, `template komentar ${brand.name} sudah terpakai semua hari ini (tambah: /addtpl ${j.brand} teks)`);
   const body = fill(tpl, { name: j.name, handle: j.username, channel: j.channel });
-  const { data } = await clients[j.brand].v2.reply(body, j.tweetId);
+  if (!apiCanReply(j.brand, mentionsOf(j.tweetText))) return manualReply(j, tpl, body);
+  let data;
+  try {
+    ({ data } = await clients[j.brand].v2.reply(body, j.tweetId));
+  } catch (e) {
+    if (!mentionOnlyErr(e)) throw e;
+    await markMentionOnly(j.brand);
+    return manualReply(j, tpl, body);
+  }
   useTemplate(j.handle, tpl);
   db.repliedTweets = [...db.repliedTweets.slice(-999), j.tweetId];
   db.replyLog[j.handle] = [...log, Date.now()];
@@ -347,13 +387,14 @@ async function notOptedIn(handle, channelName) {
       useTemplate('manual:' + b, tpl);
       texts[b] = fill(tpl, vars);
     }
-    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {} }; save();
+    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {}, mentions: mentionsOf(tw.text) }; save();
     stat('manual');
     return report(
       `💬 <b>@${esc(user.username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
       `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
       brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
-      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.</i>',
+      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.' +
+      (brands.some((b) => !apiCanReply(b, db.manual[tw.id].mentions)) ? ' ✍️ Balas di X = buka X dengan komentar terisi, lalu Reply.' : '') + '</i>',
       actionRows(tw.id)
     );
   } catch (e) {
@@ -371,10 +412,12 @@ function actionRows(tid) {
   const multi = m.brands.length > 1;
   const rows = m.brands.filter((b) => db.brands[b]).map((b) => ['c', 'l', 'f']
     .filter((a) => (a !== 'c' || m.texts[b]) && (a !== 'f' || m.authorId))
-    .map((a) => btn(`${ACT_LABEL[a][m.done[`${a}:${b}`] ? 1 : 0]}${a === 'c' || multi ? ` · ${brandName(b)}` : ''}`, `mx:${a}:${b}:${tid}`)));
-  const first = m.brands.find((b) => m.texts[b]);
+    .map((a) => (a === 'c' && !m.done[`c:${b}`] && !apiCanReply(b, m.mentions)
+      ? Markup.button.url(`✍️ Balas di X · ${brandName(b)}`, replyIntent(tid, m.texts[b]))
+      : btn(`${ACT_LABEL[a][m.done[`${a}:${b}`] ? 1 : 0]}${a === 'c' || multi ? ` · ${brandName(b)}` : ''}`, `mx:${a}:${b}:${tid}`))));
+  const first = m.brands.find((b) => m.texts[b] && apiCanReply(b, m.mentions)); // ✍️ Balas di X per brand sudah ada
   rows.push([
-    ...(first ? [Markup.button.url('✍️ Ubah di X', `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(m.texts[first])}`)] : []),
+    ...(first ? [Markup.button.url('✍️ Ubah di X', replyIntent(tid, m.texts[first]))] : []),
     Markup.button.url('🔗 Tweet', `https://x.com/${m.username}/status/${tid}`),
     ...(m.replyId ? [Markup.button.url('🔗 Komentar', `https://x.com/i/status/${m.replyId}`)] : [])
   ]);
@@ -391,6 +434,11 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   const m = db.manual[tid];
   if (!m || !m.brands.includes(b)) return alert('Tombol ini sudah kedaluwarsa (lebih dari 3 hari).');
   if (m.done[key]) return ctx.answerCbQuery('Sudah dilakukan ✅').catch(() => {});
+  const toIntent = async () => {
+    await ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
+    return alert(`X hanya mengizinkan komentar lewat API ke tweet yang me-mention akun ${brandName(b)}. Pakai tombol ✍️ Balas di X · ${brandName(b)} (buka X sebagai akun itu, lalu Reply).`);
+  };
+  if (a === 'c' && !apiCanReply(b, m.mentions)) return toIntent(); // tombol lama dari sebelum X menolak
   if (!clients[b]) return alert(`Akun X ${brandName(b)} belum tersambung.`);
   if (isDown(b) || limited(b)) return alert(`Akun ${brandName(b)} sedang jeda/dihentikan — coba lagi nanti.`);
   if (!withinLimits(b)) return alert(`Batas akun ${brandName(b)} tercapai (${db.limits.maxPerHour}/jam, ${db.limits.maxPerDay}/hari). Ubah di /menu → Jeda & Batas.`);
@@ -406,6 +454,7 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
     else await x.follow(await meId(b), m.authorId);
   } catch (e) {
     console.error('aksi tombol:', e);
+    if (a === 'c' && mentionOnlyErr(e)) { await markMentionOnly(b); return toIntent(); }
     if (e?.code === 429) await xError(e, `${ACT_LABEL[a][0]} @${m.username}`, b);
     return alert(`❌ ${a === 'c' && cannotReply(e)
       ? 'X menolak komentar lewat API untuk tweet ini (project belum pernah me-mention / berinteraksi dengan akun brand). Pakai tombol ✍️ Ubah di X.'
@@ -1050,7 +1099,7 @@ async function setAccount(ctx, brand, keys) {
   const isNew = !db.brands[brand];
   db.brands[brand] ||= newBrand(brand);
   Object.assign(db.brands[brand], { x: creds, username: me.username, userId: me.id });
-  delete db.brandDown[brand]; failStreak[brand] = 0;
+  delete db.brandDown[brand]; delete db.brands[brand].mentionOnly; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
     `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n` +

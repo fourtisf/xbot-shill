@@ -173,6 +173,11 @@ function optedIn(username, brand) {
 }
 const repliesTo = (tid) => xcalls('reply').filter((c) => c[2] === tid);
 const xErr = (code, detail) => Object.assign(new Error(detail), { code, data: { detail } });
+// X API: komentar hanya boleh ke tweet yang me-mention akun brand (atau tweet sendiri)
+const mentionOnlyErr = () => xErr(403, 'You can only reply to or quote posts where you are mentioned or are the author.');
+const lastAnswer = () => M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text;
+const lastEdit = () => M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
+const keyboardOf = (text) => sent().find((m) => m.payload.text === text).payload.reply_markup.inline_keyboard;
 
 const results = [];
 async function test(name, fn) {
@@ -637,6 +642,44 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
   }
 });
 
+await test('komentar 1-tap: X hanya mengizinkan tweet yang me-mention → tombol jadi ✍️ Balas di X (tanpa API), bukan masalah akun', async () => {
+  db.auto.manualAssist = true;
+  try {
+    users.tapmention = user('u97', 'TapMention', 'Tap Mention');
+    const tid = snow(Date.now(), 991);
+    M.x.timelines.u97 = [{ id: tid, text: 'big news today', created_at: new Date().toISOString() }];
+    post(alpha, 'x.com/TapMention');
+    await reportMatching('<b>@TapMention</b> belum opt-in — siap dikomentari');
+    M.x.failNext.reply = mentionOnlyErr();
+    await tap(ADMIN, `mx:c:fourtis:${tid}`);
+    assert.match(lastAnswer(), /me-mention akun Fourtis/);
+    const kb = lastEdit();
+    assert.equal(kb[0][0].text, '✍️ Balas di X · Fourtis');
+    assert.equal(new URL(kb[0][0].url).searchParams.get('in_reply_to'), tid);
+    assert.equal(new URL(kb[0][0].url).searchParams.get('text'), db.manual[tid].texts.fourtis);
+    assert.equal(kb[1][0].callback_data, `mx:c:dexvra:${tid}`); // Dexvra belum ditolak X: tetap 💬 Kirim
+    assert.ok(!db.manual[tid].done['c:fourtis']);
+    assert.ok(!db.brandDown.fourtis);
+    await reportMatching('X hanya mengizinkan akun Fourtis (@fourtisbot) berkomentar lewat API');
+
+    // Laporan berikutnya: Fourtis langsung ✍️ Balas di X; tombol 💬 lama tidak memanggil API lagi
+    users.tapmentiontwo = user('u96', 'TapMentionTwo', 'Tap Two');
+    const tid2 = snow(Date.now(), 992);
+    M.x.timelines.u96 = [{ id: tid2, text: 'another update', created_at: new Date().toISOString() }];
+    post(alpha, 'x.com/TapMentionTwo');
+    const r = await reportMatching('<b>@TapMentionTwo</b> belum opt-in — siap dikomentari');
+    assert.match(r, /✍️ Balas di X = buka X dengan komentar terisi/);
+    assert.equal(keyboardOf(r)[0][0].text, '✍️ Balas di X · Fourtis');
+    const before = xcalls('reply').length;
+    await tap(ADMIN, `mx:c:fourtis:${tid2}`);
+    assert.equal(xcalls('reply').length, before);
+    assert.match(lastAnswer(), /Balas di X · Fourtis/);
+  } finally {
+    db.auto.manualAssist = false;
+    delete db.brands.fourtis.mentionOnly;
+  }
+});
+
 await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {
   users.brandproj = user('u26', 'BrandProj', 'Brand Project');
   M.x.timelines.u26 = [{ id: snow(now, 500), text: 'brand news', created_at: new Date().toISOString() }];
@@ -758,6 +801,36 @@ await test('tweet "hanya akun yang di-mention" dilewati dari awal, kecuali akun 
   await until(() => xcalls('reply').filter((r) => r[1].includes('Mention Project')).length === 2, '2 komentar MentionProj');
   const ids = xcalls('reply').filter((r) => r[1].includes('Mention Project')).map((r) => r[2]);
   assert.deepEqual(ids, [b.id, c.id]);
+});
+
+await test('project opt-in: X hanya mengizinkan tweet yang me-mention → komentar disiapkan (✍️ Balas di X), rem darurat tidak terpicu', async () => {
+  const t1 = optedIn('OnlyMentionA');
+  M.x.failNext.reply = mentionOnlyErr();
+  try {
+    post(alpha, 'x.com/OnlyMentionA');
+    const r = await reportMatching('<b>@OnlyMentionA</b> (opt-in)');
+    assert.match(r, /Komentar siap/);
+    const b = keyboardOf(r).flat().find((k) => k.text === '✍️ Balas di X · Fourtis');
+    assert.equal(new URL(b.url).searchParams.get('in_reply_to'), t1);
+    assert.match(new URL(b.url).searchParams.get('text'), /OnlyMentionA/);
+    assert.ok(db.brands.fourtis.mentionOnly);
+    assert.equal(repliesTo(t1).length, 1); // hanya percobaan yang ditolak X
+
+    // Tweet berikutnya tanpa mention: tidak dicoba lewat API (tidak menumpuk penolakan di akun)
+    const t2 = optedIn('OnlyMentionB');
+    const t3 = optedIn('OnlyMentionC');
+    post(alpha, 'x.com/OnlyMentionB');
+    await reportMatching('<b>@OnlyMentionB</b> (opt-in)');
+    assert.equal(repliesTo(t2).length, 0);
+    // Tweet yang me-mention akun brand: tetap dikomentari otomatis lewat API
+    M.x.timelines[users.onlymentionc.id][0].text = 'thanks @FourtisBot for the support';
+    post(alpha, 'x.com/OnlyMentionC');
+    await until(() => repliesTo(t3).length, 'komentar API ke tweet yang me-mention');
+    await reportMatching('Project: <b>@OnlyMentionC</b>');
+    assert.ok(!db.brandDown.fourtis);
+  } finally {
+    delete db.brands.fourtis.mentionOnly;
+  }
 });
 
 await test('project memblokir akun → opt-in brand itu dihentikan, tidak dicoba lewat akun lain', async () => {
