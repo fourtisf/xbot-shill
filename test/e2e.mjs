@@ -76,6 +76,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   templates: ['Love seeing {name} 🚀', '{name} keeps shipping 🔥', 'Big week for {name} 👀'],
   ownTweetTemplate: '🚀 New project spotted: {name}\nVia {channel}\nx.com/{handle}',
   ownTweetEnabled: true, tweetBotDefaultOff: true, // test ini menguji tweet bot, jadi dinyalakan
+  filter: { minFollowers: 500, minAgeDays: 14, blacklist: ['scam', 'rug'] }, filterOffDefault: true, // filter dinyalakan untuk diuji
   optins: { optproj: { at: now, via: 'admin' } },
   lastSeen: { 1001: 3 },
   queue: [{ type: 'tweet', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', at: now }],
@@ -665,6 +666,23 @@ await test('data lama: tweet bot dimatikan sekali saat update, setelah itu pilih
   const chosen = load({ brands: { fourtis: on }, tweetBotDefaultOff: true }); // dinyalakan lagi oleh pemilik
   assert.equal(chosen.brands.fourtis.ownTweetEnabled, true);
   assert.equal(load({}).brands.fourtis.ownTweetEnabled, false); // instalasi baru: OFF
+});
+
+await test('filter mati bawaan: data lama dimatikan sekali saat update, setelah itu pilihan pemilik dihormati', async () => {
+  const load = (data) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xagent-filteroff-'));
+    fs.writeFileSync(path.join(dir, 'data.json'), JSON.stringify(data));
+    return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+      `const { db } = await import(${JSON.stringify(new URL('../src/db.js', import.meta.url).href)}); console.log(JSON.stringify(db.filter))`],
+    { env: { ...process.env, DB_FILE: path.join(dir, 'data.json') }, stdio: ['ignore', 'pipe', 'ignore'] }).toString());
+  };
+  const on = { minFollowers: 500, minAgeDays: 14, blacklist: ['scam', 'rug'], cooldownDays: 3 };
+  const off = { minFollowers: 0, minAgeDays: 0, blacklist: [] };
+  assert.deepEqual(load({}), { ...load({}), ...off }); // instalasi baru: tanpa filter
+  const old = load({ filter: on });
+  assert.deepEqual({ ...old, ...off }, old);
+  assert.equal(old.cooldownDays, 3); // pengaturan lain tidak disentuh
+  assert.equal(load({ filter: on, filterOffDefault: true }).minFollowers, 500); // dinyalakan lagi oleh pemilik
 });
 
 await test('/tweet off dexvra hanya mematikan tweet Dexvra', async () => {

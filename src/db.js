@@ -49,9 +49,10 @@ const defaults = {
   pending: {}, // handle -> { code, by, at, brand }
   history: {}, // handle -> timestamp terakhir diproses
   filter: {
-    minFollowers: 500,
-    minAgeDays: 14,
-    blacklist: ['scam', 'rug'],
+    // Bawaan tanpa filter: setiap link X dari channel target langsung diproses (bisa dinyalakan di /menu → Filter)
+    minFollowers: 0,
+    minAgeDays: 0,
+    blacklist: [],
     cooldownDays: 7,
     tweetsPerProject: 3, // berapa tweet TERBARU yang dikomentari per project
     maxTweetAgeHours: 48,
@@ -132,6 +133,11 @@ function load() {
   if (typeof d.pausedUntil !== 'object' || !d.pausedUntil) d.pausedUntil = d.pausedUntil ? { [d.defaultBrand]: d.pausedUntil } : {};
   if (typeof d.watchSinceId !== 'object' || !d.watchSinceId) d.watchSinceId = d.watchSinceId ? { [d.defaultBrand]: d.watchSinceId } : {};
   for (const j of d.queue) j.brand ||= d.defaultBrand;
+  // Filter followers / umur akun / kata terlarang dulu aktif bawaan; sekarang mati. Data lama dimatikan sekali
+  if (!d.filterOffDefault) {
+    Object.assign(d.filter, { minFollowers: 0, minAgeDays: 0, blacklist: [] });
+    d.filterOffDefault = true;
+  }
   // Tweet bot dulu ON bawaan; sekarang OFF. Data lama dimatikan sekali — nyalakan lagi lewat tombol kalau mau
   if (!d.tweetBotDefaultOff) {
     for (const v of Object.values(d.brands)) v.ownTweetEnabled = false;

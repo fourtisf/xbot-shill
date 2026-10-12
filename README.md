@@ -120,7 +120,7 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 | `/addtweet [brand] teks` `/deltweet [brand] n` | Template tweet bot per brand (dirotasi) |
 | `/tweet on\|off [brand]` | Tweet bot untuk project belum opt-in (semua brand atau satu brand) |
 | `/optins` `/addoptin @h [brand]` `/deloptin` | Daftar project opt-in & brand-nya (+ yang menunggu verifikasi) |
-| `/filter` `/filter minFollowers 1000` | minFollowers, minAgeDays, blacklist, cooldownDays, tweetsPerProject, maxTweetAgeHours |
+| `/filter` `/filter minFollowers 1000` | minFollowers, minAgeDays, blacklist (bawaan **mati**: setiap link X dari channel langsung diproses), cooldownDays, tweetsPerProject, maxTweetAgeHours |
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |
 | `/jeda` `/jeda 5` `/jeda 3 6` `/jeda project 10` | Jeda dalam menit: antar semua aksi (tetap / acak) dan antar komentar ke project yang sama |
 | `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, replyGapMin, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
