@@ -831,7 +831,7 @@ async function setAccount(ctx, brand, keys) {
     ({ data: me } = await new TwitterApi(creds).readWrite.v2.me());
   } catch (e) {
     return ctx.reply('❌ Key tidak valid: ' + (e?.data?.detail || e.message) +
-      '\n\nCek: urutannya 1. API Key, 2. API Key Secret, 3. Access Token (diawali angka lalu "-"), 4. Access Token Secret; ' +
+      '\n\nCek: urutannya 1. Consumer Key (API Key), 2. Secret Key (API Key Secret), 3. Access Token (diawali angka lalu "-"), 4. Access Token Secret; ' +
       'dan Access Token dibuat SETELAH App permissions = Read and write.' + (hadKeys ? '\nKey lama tetap dipakai.' : ''));
   }
   // Satu akun X hanya untuk satu brand (dua brand di satu akun = konten dobel)
@@ -843,7 +843,8 @@ async function setAccount(ctx, brand, keys) {
   delete db.brandDown[brand]; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
-    `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n(pesan berisi key sudah dihapus)` +
+    `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n` +
+    `Bot akan posting & berkomentar sebagai @${me.username} — pastikan ini memang akun X ${brandName(brand)}.\n(pesan berisi kode sudah dihapus)` +
     (isNew ? `\n\nBrand baru "${brand}" dibuat dengan template contoh. Ganti dengan /addtpl ${brand} ... dan /addtweet ${brand} ...` : '')
   );
   runQueue();
@@ -1108,7 +1109,7 @@ function accountsPanel(checked = {}) {
     return `<b>${esc(v.name)}</b>: ${esc(st)}\n   channel ${chs} · opt-in ${ops}`;
   });
   const rows = Object.entries(db.brands).map(([b, v]) => [
-    btn(`${v.x ? '🔑 Ganti' : '➕ Hubungkan'} akun ${v.name}`, `m:ask:keys:${b}`),
+    btn(`${v.x ? '🔑 Ganti' : '➕ Hubungkan'} akun ${v.name}`, `m:conn:${b}`),
     ...(isDown(b) || limited(b) ? [btn('▶️ Jalankan', `m:accres:${b}`)] : []),
     ...(v.x ? [btn('🗑', `m:accdel:${b}`)] : [])
   ]);
@@ -1214,17 +1215,74 @@ const SETTABLE = {
 };
 const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel };
 
-const KEY_STEPS = ['API Key', 'API Key Secret', 'Access Token', 'Access Token Secret'];
+// Nama di console.x.com (nama lama di developer portal dalam kurung)
+const KEY_STEPS = ['Consumer Key (API Key)', 'Secret Key (API Key Secret)', 'Access Token', 'Access Token Secret'];
+const NOT_USED = '❌ Tidak dipakai: Bearer Token, dan semua di bagian OAuth 2.0 (Client ID, Client Secret, Access Token).';
+const nameOf = (b) => esc(db.brands[b]?.name || newBrand(b).name);
+// Kenali kode yang salah tempel sebelum dikirim ke X
+function keyMistake(step, v) {
+  if (/^A{8,}/.test(v) || v.includes('%')) return 'Itu Bearer Token — tidak dipakai.';
+  if (/^[A-Za-z0-9+/=_-]{20,60}$/.test(v) && /:\d+:ci$/.test(Buffer.from(v, 'base64').toString('latin1'))) {
+    return 'Itu Client ID (OAuth 2.0) — tidak dipakai.';
+  }
+  const access = /^\d+-\w+$/.test(v);
+  if (step === 2 && !access) return 'Access Token selalu diawali angka lalu tanda "-" (contoh 123456789-AbCd…). Kode ini sepertinya bukan Access Token.';
+  if (step !== 2 && access) return `Ini Access Token (diawali angka lalu "-"), padahal yang diminta sekarang ${KEY_STEPS[step]}.`;
+  if (v.length < 20) return 'Kode ini terlalu pendek — pastikan tersalin utuh (pakai tombol copy di console X).';
+  return null;
+}
+// Pilihan cara menghubungkan akun X ke brand
+function connPanel(b) {
+  const name = nameOf(b);
+  const donors = Object.entries(db.brands).filter(([k, v]) => k !== b && v.x);
+  return {
+    text: `🔗 <b>Hubungkan akun X ${name}</b> — pilih cara:\n\n` +
+      `<b>🔗 Login X (disarankan)</b>\nCukup 2 kode app (Consumer Key + Secret Key), lalu buka link dari bot, login sebagai akun X ${name}, dan kirim PIN yang muncul. ` +
+      'Satu app developer bisa dipakai untuk semua brand.\n\n' +
+      `<b>🔑 4 kode manual</b>\nConsumer Key, Secret Key, Access Token, Access Token Secret dari console X. ` +
+      `Access Token di console selalu milik akun yang login ke console ("For @…") — harus akun X ${name}.`,
+    rows: [
+      [btn('🔗 Login X (disarankan)', `m:ask:oauth:${b}`)],
+      ...donors.map(([k, v]) => [btn(`🔗 Login X pakai app ${v.name}`, `m:oauthreuse:${b}:${k}`)]),
+      [btn('🔑 4 kode manual', `m:ask:keys:${b}`)],
+      [btn('⬅️ Akun X', 'm:acc')]
+    ]
+  };
+}
+// Login X lewat PIN (OAuth 1.0a): link otorisasi untuk akun brand, token didapat dari PIN
+async function startPinLogin(ctx, brand, appKey, appSecret) {
+  let link;
+  try {
+    link = await new TwitterApi({ appKey, appSecret }).generateAuthLink('oob', { linkMode: 'authorize', forceLogin: true });
+  } catch (e) {
+    return ctx.reply(`❌ Gagal membuat link login: ${e?.data?.detail || e?.data?.errors?.[0]?.message || e.message}\n\n` +
+      'Cek: Consumer Key + Secret Key benar, dan di console X → app → User authentication settings sudah disimpan (Read and write). ' +
+      'Atau pakai "🔑 4 kode manual".');
+  }
+  awaiting.set(ctx.from.id, { kind: 'pin', brand, appKey, appSecret, token: link.oauth_token, secret: link.oauth_token_secret, at: Date.now() });
+  return ctx.replyWithHTML(
+    `🔗 <b>Login X untuk ${nameOf(brand)}</b> — langkah terakhir\n\n` +
+    `1. Buka link ini: <a href="${esc(link.url)}">Login &amp; izinkan akses</a>\n` +
+    `2. Login sebagai akun X <b>${nameOf(brand)}</b> (bukan akun pribadi), lalu klik <b>Authorize app</b>\n` +
+    '3. X menampilkan <b>PIN</b> (7 angka) → kirim PIN itu ke sini\n\nLink berlaku ±15 menit. /batal untuk batal.',
+    { disable_web_page_preview: true }
+  );
+}
 const PROMPTS = {
-  keys: (b) => `🔑 <b>Hubungkan akun X ${esc(db.brands[b]?.name || newBrand(b).name)}</b>\n\n` +
-    'Buka developer.x.com (login sebagai akun X brand ini) → app Anda → tab <b>Keys and tokens</b>.\n' +
-    'Bot minta 4 kode, satu per satu:\n' + KEY_STEPS.map((k, i) => `${i + 1}. ${k}`).join('\n') +
-    '\n(Bearer Token, Client ID, Client Secret tidak dipakai.)\n\n' +
-    '⚠️ Access Token harus dibuat SETELAH App permissions diubah ke <b>Read and write</b>.\n\n' +
+  keys: (b) => `🔑 <b>Hubungkan akun X ${nameOf(b)} — 4 kode manual</b>\n\n` +
+    'Di console.x.com → <b>Apps</b> → app Anda, bagian <b>OAuth 1.0 Keys</b>:\n' +
+    `• Baris <b>Consumer Key</b> → klik Regenerate → muncul:\n   1. ${KEY_STEPS[0]}\n   2. ${KEY_STEPS[1]}\n` +
+    `• Baris <b>Access Token</b> → klik Generate/Regenerate → muncul:\n   3. ${KEY_STEPS[2]}\n   4. ${KEY_STEPS[3]}\n` +
+    `   Harus tertulis <b>Read and write</b> dan <b>For @akun-X-${nameOf(b)}</b>.\n\n${NOT_USED}\n\n` +
     `👉 Kirim sekarang: <b>1. ${KEY_STEPS[0]}</b>\n` +
-    '(Boleh juga keempatnya sekaligus dalam satu pesan, dipisah spasi, urut 1–4.)\n\nPesan berisi kode langsung dihapus. /batal untuk batal.',
+    '(Boleh juga keempatnya sekaligus, dipisah spasi, urut 1–4.)\n\nPesan berisi kode langsung dihapus. /batal untuk batal.',
+  oauth: (b) => `🔗 <b>Login X untuk ${nameOf(b)}</b> — kirim 2 kode app\n\n` +
+    'Di console.x.com → <b>Apps</b> → app Anda → <b>OAuth 1.0 Keys</b> → baris <b>Consumer Key</b> → klik Regenerate:\n' +
+    `   1. ${KEY_STEPS[0]}\n   2. ${KEY_STEPS[1]}\n` +
+    'App harus sudah diatur <b>Read and write</b> (User authentication settings).\n\n' + `${NOT_USED}\n\n` +
+    `👉 Kirim sekarang: <b>1. ${KEY_STEPS[0]}</b>\n\nPesan berisi kode langsung dihapus. /batal untuk batal.`,
   newbrand: () => '➕ <b>Brand baru</b>\n\nKirim nama brand: huruf kecil/angka tanpa spasi, contoh <code>nova</code>.\n' +
-    'Setelah itu bot minta 4 kode akun X-nya satu per satu. /batal untuk batal.',
+    'Setelah itu pilih cara menghubungkan akun X-nya. /batal untuk batal.',
   channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau ID <code>-100…</code>\n' +
     `${LISTENER ? 'Akun listener harus sudah join channel itu.' : 'Jadikan bot admin di channel itu dulu.'} /batal untuk batal.`,
   tpl: (b, f) => `📝 Kirim teks template ${f === 'k' ? 'komentar' : 'tweet bot'} untuk <b>${esc(brandName(b))}</b>.\n` +
@@ -1251,28 +1309,59 @@ function chooseBrand(ctx, question, data) {
   return ctx.reply(question, Markup.inlineKeyboard([Object.entries(db.brands).map(([b, v]) => btn(v.name, data(b)))]));
 }
 
+// Kumpulkan kode satu per satu (atau beberapa sekaligus); pesan berisi kode langsung dihapus.
+// Kembalikan daftar kode kalau sudah lengkap, selain itu balas dengan langkah berikutnya
+async function collectKeys(ctx, a, need) {
+  try { await ctx.deleteMessage(); } catch {}
+  const got = [...(a.got || [])];
+  for (const v of ctx.message.text.trim().split(/\s+/).filter(Boolean)) {
+    const bad = keyMistake(got.length, v);
+    if (bad) {
+      awaiting.set(ctx.from.id, { ...a, got, at: Date.now() });
+      await ctx.replyWithHTML(`⚠️ ${esc(bad)}\n👉 Kirim lagi: <b>${got.length + 1}. ${KEY_STEPS[got.length]}</b>`);
+      return null;
+    }
+    got.push(v);
+    if (got.length === need) return got;
+  }
+  awaiting.set(ctx.from.id, { ...a, got, at: Date.now() });
+  await ctx.replyWithHTML(`✅ ${KEY_STEPS[got.length - 1]} diterima (${got.length}/${need}).\n👉 Sekarang kirim: <b>${got.length + 1}. ${KEY_STEPS[got.length]}</b>`);
+  return null;
+}
+
 async function handleInput(ctx, a) {
   const text = ctx.message.text.trim();
   const again = (msg) => { awaiting.set(ctx.from.id, { ...a, at: Date.now() }); return ctx.reply(msg); };
   const brands = Object.keys(db.brands);
   switch (a.kind) {
     case 'keys': {
-      // Satu per satu (atau beberapa sekaligus); setiap pesan berisi kode langsung dihapus
-      try { await ctx.deleteMessage(); } catch {}
-      const got = [...(a.got || []), ...text.split(/\s+/).filter(Boolean)];
-      if (got.length < 4) {
-        awaiting.set(ctx.from.id, { ...a, got, at: Date.now() });
-        return ctx.replyWithHTML(`✅ ${KEY_STEPS[got.length - 1]} diterima (${got.length}/4).\n👉 Sekarang kirim: <b>${got.length + 1}. ${KEY_STEPS[got.length]}</b>`);
+      const got = await collectKeys(ctx, a, 4);
+      if (!got) return;
+      await setAccount(ctx, a.brand, got);
+      return showPanel(ctx, accountsPanel(), false);
+    }
+    case 'oauth': {
+      const got = await collectKeys(ctx, a, 2);
+      if (got) return startPinLogin(ctx, a.brand, got[0], got[1]);
+      return;
+    }
+    case 'pin': {
+      const pin = text.replace(/\D/g, '');
+      if (pin.length < 6) return again('PIN berupa angka (7 digit) yang muncul di halaman X setelah klik Authorize app. Kirim lagi, atau /batal');
+      let res;
+      try {
+        res = await new TwitterApi({ appKey: a.appKey, appSecret: a.appSecret, accessToken: a.token, accessSecret: a.secret }).login(pin);
+      } catch (e) {
+        return ctx.reply(`❌ PIN ditolak: ${e?.data?.detail || e.message}\nPIN hanya berlaku sekali dan sebentar. Ulangi dari /menu → Akun X → Hubungkan.`);
       }
-      await setAccount(ctx, a.brand, got.slice(0, 4));
+      await setAccount(ctx, a.brand, [a.appKey, a.appSecret, res.accessToken, res.accessSecret]);
       return showPanel(ctx, accountsPanel(), false);
     }
     case 'newbrand': {
       const b = text.toLowerCase();
       if (!/^[a-z0-9_]{2,20}$/.test(b)) return again('Nama brand: huruf kecil/angka tanpa spasi, contoh: nova. Kirim lagi, atau /batal');
       if (db.brands[b]) return again(`Brand "${b}" sudah ada. Pakai tombol Hubungkan/Ganti akun di panel, atau kirim nama lain.`);
-      awaiting.set(ctx.from.id, { kind: 'keys', brand: b, at: Date.now() });
-      return ctx.replyWithHTML(PROMPTS.keys(b));
+      return showPanel(ctx, connPanel(b), false);
     }
     case 'channel': {
       const c = text.split(/\s+/)[0].toLowerCase();
@@ -1318,6 +1407,14 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'home': panel = homePanel(); break;
     case 'status': panel = { text: statusText(), rows: [[btn('🔄 Refresh', 'm:status')], HOME] }; break;
     case 'acc': panel = accountsPanel(); break;
+    case 'conn': if (/^[a-z0-9_]{2,20}$/.test(arg)) panel = connPanel(arg); break;
+    case 'oauthreuse': {
+      const [b, from] = args;
+      const app = db.brands[from]?.x;
+      if (!/^[a-z0-9_]{2,20}$/.test(b) || !app) break;
+      await ctx.answerCbQuery().catch(() => {});
+      return startPinLogin(ctx, b, app.appKey, app.appSecret);
+    }
     case 'acccek': {
       const checked = {};
       for (const b of Object.keys(db.brands)) checked[b] = await accountStatus(b);
@@ -1398,7 +1495,8 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'resume': toast = resume(); panel = homePanel(); break;
     case 'ask': {
       const [kind, b, f] = args;
-      if (!PROMPTS[kind] || (['keys', 'tpl'].includes(kind) && !findBrand(b)) || (kind === 'tpl' && !FIELD[f])) break;
+      if (!PROMPTS[kind] || (['keys', 'oauth'].includes(kind) && !/^[a-z0-9_]{2,20}$/.test(b || '')) ||
+        (kind === 'tpl' && (!findBrand(b) || !FIELD[f]))) break;
       awaiting.set(ctx.from.id, { kind, brand: b, field: f, at: Date.now() });
       await ctx.answerCbQuery().catch(() => {});
       return ctx.replyWithHTML(PROMPTS[kind](b, f));

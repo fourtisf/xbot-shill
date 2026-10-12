@@ -238,14 +238,30 @@ await test('Filter & Otomatis: preset dan tombol ON/OFF', async () => {
   db.filter.minFollowers = 500;
 });
 
-await test('Akun X: hubungkan Dexvra lewat tombol, pesan berisi key langsung dihapus', async () => {
+// Kode X palsu berformat realistis (bukan kode asli)
+const keysFor = (p) => [`${p}ConsumerKey`.padEnd(25, '0'), `${p}SecretKey`.padEnd(50, '0'),
+  `1234567890-${p}AccessToken`.padEnd(50, '0'), `${p}AccessSecret`.padEnd(45, '0')];
+const DK = keysFor('dk'), FT = keysFor('ft'), NK = keysFor('nk'), BAD = keysFor('bad');
+const deletes = () => M.botCalls.filter((c) => c.method === 'deleteMessage').length;
+
+await test('Akun X: tombol Hubungkan → pilihan cara (Login X / pakai app brand lain / 4 kode manual)', async () => {
+  assert.ok(dataOf(await tap(ADMIN, 'm:acc')).includes('m:conn:dexvra'));
+  const p = await tap(ADMIN, 'm:conn:dexvra');
+  assert.match(p.text, /Hubungkan akun X Dexvra<\/b> — pilih cara/);
+  assert.deepEqual(dataOf(p), ['m:ask:oauth:dexvra', 'm:oauthreuse:dexvra:fourtis', 'm:ask:keys:dexvra', 'm:acc']);
+});
+
+await test('Akun X (4 kode manual): panduan sesuai console X, keempatnya sekaligus, pesan dihapus', async () => {
   const prompt = await tap(ADMIN, 'm:ask:keys:dexvra');
-  assert.match(prompt.text, /1\. API Key\n2\. API Key Secret\n3\. Access Token\n4\. Access Token Secret/);
-  assert.match(prompt.text, /Kirim sekarang: <b>1\. API Key<\/b>/);
-  const dels = M.botCalls.filter((c) => c.method === 'deleteMessage').length;
-  await dm(ADMIN, 'dk ds dt da');
-  await until(() => db.brands.dexvra.x?.appKey === 'dk', 'akun Dexvra tersambung');
-  assert.ok(M.botCalls.filter((c) => c.method === 'deleteMessage').length > dels);
+  assert.match(prompt.text, /OAuth 1\.0 Keys/);
+  assert.match(prompt.text, /1\. Consumer Key \(API Key\)\n   2\. Secret Key \(API Key Secret\)/);
+  assert.match(prompt.text, /3\. Access Token\n   4\. Access Token Secret/);
+  assert.match(prompt.text, /Tidak dipakai: Bearer Token/);
+  const dels = deletes();
+  await dm(ADMIN, DK.join(' '));
+  await until(() => db.brands.dexvra.x?.appKey === DK[0], 'akun Dexvra tersambung');
+  assert.ok(deletes() > dels);
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('Bot akan posting & berkomentar sebagai @dexvra_x')));
   await until(() => lastPanel(ADMIN)?.text?.includes('Akun X'), 'panel akun');
   assert.match(lastPanel(ADMIN).text, /Dexvra<\/b>: ✅ @dexvra_x/);
   const conf = await tap(ADMIN, 'm:accdel:dexvra');
@@ -254,35 +270,74 @@ await test('Akun X: hubungkan Dexvra lewat tombol, pesan berisi key langsung dih
   assert.ok(db.brands.dexvra.x);
 });
 
-await test('Akun X: key dikirim SATU PER SATU — bot memandu 1/4 … 4/4, tiap pesan dihapus', async () => {
+await test('Akun X: kode SATU PER SATU (1/4 … 4/4) dan kode salah tempel langsung dikenali', async () => {
   await tap(ADMIN, 'm:ask:keys:fourtis');
-  const dels = M.botCalls.filter((c) => c.method === 'deleteMessage').length;
-  assert.match(await dm(ADMIN, 'k'), /API Key diterima \(1\/4\)[\s\S]*Sekarang kirim: <b>2\. API Key Secret<\/b>/);
-  assert.match(await dm(ADMIN, 's'), /API Key Secret diterima \(2\/4\)[\s\S]*3\. Access Token/);
-  assert.match(await dm(ADMIN, 't'), /Access Token diterima \(3\/4\)[\s\S]*4\. Access Token Secret/);
-  await dm(ADMIN, 'a');
+  const dels = deletes();
+  const clientId = Buffer.from('FakeClientIdValue0001:1:ci').toString('base64');
+  assert.match(await dm(ADMIN, 'AAAAAAAAAAAAAAAAAAAAAFakeBearer%2Ftoken0000'), /Itu Bearer Token[\s\S]*Kirim lagi: <b>1\. Consumer Key/);
+  assert.match(await dm(ADMIN, clientId), /Itu Client ID/);
+  assert.match(await dm(ADMIN, FT[2]), /Ini Access Token[\s\S]*Consumer Key/);
+  assert.match(await dm(ADMIN, FT[0]), /Consumer Key \(API Key\) diterima \(1\/4\)[\s\S]*Sekarang kirim: <b>2\. Secret Key \(API Key Secret\)<\/b>/);
+  assert.match(await dm(ADMIN, 'pendek'), /terlalu pendek/);
+  assert.match(await dm(ADMIN, FT[1]), /diterima \(2\/4\)[\s\S]*3\. Access Token/);
+  assert.match(await dm(ADMIN, FT[3]), /bukan Access Token/);
+  assert.match(await dm(ADMIN, FT[2]), /Access Token diterima \(3\/4\)[\s\S]*4\. Access Token Secret/);
+  await dm(ADMIN, FT[3]);
   await until(() => messagesTo(ADMIN).some((m) => m.includes('Akun X Fourtis diganti: @fourtisbot')), 'akun Fourtis tersambung');
-  assert.ok(M.botCalls.filter((c) => c.method === 'deleteMessage').length - dels >= 4, 'keempat pesan kode dihapus');
-  assert.deepEqual(db.brands.fourtis.x, { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' });
+  assert.ok(deletes() - dels >= 9, 'semua pesan berisi kode dihapus');
+  assert.deepEqual(db.brands.fourtis.x, { appKey: FT[0], appSecret: FT[1], accessToken: FT[2], accessSecret: FT[3] });
 });
 
-await test('Akun X: key salah → petunjuk urutan & Read and write, key lama tetap dipakai', async () => {
+await test('Akun X: key ditolak X → petunjuk urutan & Read and write, key lama tetap dipakai', async () => {
   await tap(ADMIN, 'm:ask:keys:dexvra');
-  await dm(ADMIN, 'bad b');
-  await dm(ADMIN, 'c d');
+  await dm(ADMIN, BAD.slice(0, 2).join(' '));
+  await dm(ADMIN, BAD.slice(2).join(' '));
   const r = messagesTo(ADMIN).find((m) => m.includes('Key tidak valid') && m.includes('Read and write'));
   assert.ok(r, 'pesan petunjuk');
-  assert.match(r, /1\. API Key, 2\. API Key Secret, 3\. Access Token[\s\S]*Key lama tetap dipakai/);
-  assert.equal(db.brands.dexvra.x.appKey, 'dk');
+  assert.match(r, /1\. Consumer Key \(API Key\), 2\. Secret Key \(API Key Secret\), 3\. Access Token[\s\S]*Key lama tetap dipakai/);
+  assert.equal(db.brands.dexvra.x.appKey, DK[0]);
 });
 
-await test('Brand baru lewat tombol: nama dulu, lalu 4 key', async () => {
+await test('Login X (PIN) pakai app Fourtis: link login → PIN → akun Dexvra tersambung', async () => {
+  await tap(ADMIN, 'm:oauthreuse:dexvra:fourtis');
+  assert.match(messagesTo(ADMIN).at(-1),
+    /Login X untuk Dexvra[\s\S]*href="https:\/\/api\.x\.com\/oauth\/authorize\?oauth_token=reqtok&amp;force_login=true"[\s\S]*bukan akun pribadi[\s\S]*PIN/);
+  const g = xcalls('generateAuthLink').at(-1);
+  assert.equal(g[1], 'oob');
+  assert.deepEqual(g[2], { linkMode: 'authorize', forceLogin: true });
+  assert.equal(g[3], FT[0]);
+  assert.match(await dm(ADMIN, '12'), /PIN berupa angka/);
+  M.x.pinUser = 'dexvra_x';
+  await dm(ADMIN, '1234567');
+  await until(() => db.brands.dexvra.x.accessToken === '999-pin_dexvra_x', 'token dari PIN');
+  assert.equal(db.brands.dexvra.x.appKey, FT[0]); // satu app, dua akun
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('Akun X Dexvra diganti: @dexvra_x')));
+});
+
+await test('Login X (PIN): 2 kode app dulu; PIN salah ditolak; app key salah → pesan jelas', async () => {
+  const p = await tap(ADMIN, 'm:ask:oauth:dexvra');
+  assert.match(p.text, /kirim 2 kode app[\s\S]*1\. Consumer Key \(API Key\)\n   2\. Secret Key \(API Key Secret\)/);
+  assert.match(await dm(ADMIN, DK[0]), /diterima \(1\/2\)[\s\S]*2\. Secret Key/);
+  await dm(ADMIN, DK[1]);
+  assert.match(messagesTo(ADMIN).at(-1), /Login X untuk Dexvra/);
+  assert.match(await dm(ADMIN, '7654321'), /PIN ditolak/);
+  assert.equal(db.brands.dexvra.x.accessToken, '999-pin_dexvra_x'); // akun lama tetap
+  await tap(ADMIN, 'm:ask:oauth:dexvra');
+  await dm(ADMIN, BAD.slice(0, 2).join(' '));
+  assert.match(messagesTo(ADMIN).at(-1), /Gagal membuat link login: Could not authenticate you[\s\S]*4 kode manual/);
+});
+
+await test('Brand baru lewat tombol: nama dulu, lalu pilih cara & hubungkan', async () => {
   await tap(ADMIN, 'm:ask:newbrand');
   assert.match(await dm(ADMIN, 'Nama Salah!'), /huruf kecil\/angka/);
   assert.match(await dm(ADMIN, 'dexvra'), /sudah ada/);
-  assert.match(await dm(ADMIN, 'nova'), /Hubungkan akun X Nova[\s\S]*1\. API Key/);
-  await dm(ADMIN, 'nk ns nt na');
-  await until(() => db.brands.nova?.x?.appKey === 'nk', 'brand Nova tersambung');
+  await dm(ADMIN, 'nova');
+  const p = lastPanel(ADMIN);
+  assert.match(p.text, /Hubungkan akun X Nova<\/b> — pilih cara/);
+  assert.ok(dataOf(p).includes('m:ask:keys:nova') && dataOf(p).includes('m:oauthreuse:nova:fourtis'));
+  await tap(ADMIN, 'm:ask:keys:nova');
+  await dm(ADMIN, NK.join(' '));
+  await until(() => db.brands.nova?.x?.appKey === NK[0], 'brand Nova tersambung');
   assert.equal(db.brands.nova.username, 'nova_x');
   await dm(ADMIN, '/delaccount nova');
   assert.equal(db.brands.nova.x, null);
@@ -440,7 +495,7 @@ await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', asy
     const p = await tap(ADMIN, d);
     if (M.botCalls.filter((c) => c.method === 'answerCallbackQuery').length === answers) noAnswer.push(d);
     if (!p?.text) noPanel.push(d);
-    if (d.startsWith('m:ask:')) { await dm(ADMIN, '/batal'); continue; }
+    if (/^m:(ask|oauthreuse):/.test(d)) { await dm(ADMIN, '/batal'); continue; }
     for (const x of dataOf(p)) if (x?.startsWith('m:') && !seen.has(x)) queue.push(x);
   }
   Object.assign(db, JSON.parse(snap));

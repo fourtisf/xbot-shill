@@ -12,6 +12,20 @@ function failIfQueued(name) {
 
 export class TwitterApi {
   constructor(creds) { this.creds = creds; }
+  // Login X lewat PIN (OAuth 1.0a)
+  async generateAuthLink(callback, opts) {
+    M.x.calls.push(['generateAuthLink', callback, opts, this.creds.appKey]);
+    if (String(this.creds.appKey).startsWith('bad')) {
+      throw Object.assign(new Error('Request failed with code 401'), { code: 401, data: { errors: [{ code: 32, message: 'Could not authenticate you.' }] } });
+    }
+    return { oauth_token: 'reqtok', oauth_token_secret: 'reqsecret', oauth_callback_confirmed: 'true', url: 'https://api.x.com/oauth/authorize?oauth_token=reqtok&force_login=true' };
+  }
+  async login(pin) {
+    M.x.calls.push(['login', pin, this.creds.accessToken]);
+    if (pin !== '1234567') throw Object.assign(new Error('Request failed with code 401'), { code: 401, data: { detail: 'Invalid oauth_verifier' } });
+    const who = M.x.pinUser || 'dexvra_x';
+    return { userId: '42', screenName: who, accessToken: `999-pin_${who}`, accessSecret: 'pinsecret', client: null };
+  }
   get readWrite() {
     const { creds } = this;
     const call = (...c) => M.x.calls.push(c);
@@ -19,8 +33,11 @@ export class TwitterApi {
       v2: {
         async me() {
           call('me');
-          if (creds.appKey === 'bad') throw Object.assign(new Error('Unauthorized'), { code: 401, data: { detail: 'Unauthorized' } });
-          return { data: { id: creds.appKey, username: { dk: 'dexvra_x', nk: 'nova_x' }[creds.appKey] || 'fourtisbot' } };
+          if (String(creds.appKey).startsWith('bad')) throw Object.assign(new Error('Unauthorized'), { code: 401, data: { detail: 'Unauthorized' } });
+          // Akun ditentukan oleh token PIN, atau awalan app key (dk = Dexvra, nk = Nova, lainnya Fourtis)
+          const pin = /pin_(\w+)$/.exec(creds.accessToken || '');
+          const byKey = Object.entries({ dk: 'dexvra_x', nk: 'nova_x' }).find(([pre]) => String(creds.appKey).startsWith(pre))?.[1];
+          return { data: { id: creds.appKey, username: pin ? pin[1] : byKey || 'fourtisbot' } };
         },
         async userByUsername(h) {
           call('userByUsername', h);

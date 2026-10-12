@@ -13,6 +13,14 @@ Semua pengaturan lewat bot Telegram — tidak ada website.
 
 Satu brand = satu akun X dengan template komentar & tweet sendiri. Brand bawaan: **fourtis** (utama) dan **dexvra**.
 
+Cara termudah: `/menu` → **👤 Akun X** → **Hubungkan akun …**:
+- **🔗 Login X (disarankan)** — kirim 2 kode app (Consumer Key + Secret Key dari console.x.com → Apps → OAuth 1.0 Keys),
+  buka link dari bot, login sebagai akun X brand itu, kirim PIN. Satu app developer bisa dipakai untuk semua brand
+  (tombol "Login X pakai app Fourtis").
+- **🔑 4 kode manual** — Consumer Key, Secret Key, Access Token, Access Token Secret. Access Token di console selalu
+  milik akun yang login ke console ("For @…"), jadi harus akun X brand itu. Bot mengenali Bearer Token / Client ID /
+  urutan yang salah tempel.
+
 ```
 /addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
 /addaccount dexvra  APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
