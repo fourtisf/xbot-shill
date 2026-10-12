@@ -134,9 +134,6 @@ function load() {
   for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; }
   for (const k of Object.keys(d.tplLog || {})) if (k.startsWith('#')) delete d.tplLog[k];
   for (const k of ['channelBrand', 'tweetBotDefaultOff']) delete d[k];
-  // Batasan komentar X dulu dicatat per akun; sekarang per tweet (db.manual[tid].noApi)
-  delete d.auto.replyMentionOnly;
-  for (const v of Object.values(d.brands)) delete v.mentionOnly;
   return d;
 }
 

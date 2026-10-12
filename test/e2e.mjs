@@ -173,11 +173,6 @@ function optedIn(username, brand) {
 }
 const repliesTo = (tid) => xcalls('reply').filter((c) => c[2] === tid);
 const xErr = (code, detail) => Object.assign(new Error(detail), { code, data: { detail } });
-// X API: komentar hanya boleh ke tweet yang me-mention akun brand (atau tweet sendiri)
-const mentionOnlyErr = () => xErr(403, 'You can only reply to or quote posts where you are mentioned or are the author.');
-const lastAnswer = () => M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text;
-const lastEdit = () => M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
-const keyboardOf = (text) => sent().find((m) => m.payload.text === text).payload.reply_markup.inline_keyboard;
 
 const results = [];
 async function test(name, fn) {
@@ -642,89 +637,6 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
   }
 });
 
-await test('komentar 1-tap: 💬 = komentar + like + follow; X menolak tweet ini → hanya tweet itu jadi ✍️ Balas di X (like & follow tetap)', async () => {
-  db.auto.manualAssist = true;
-  try {
-    users.tapmention = user('u97', 'TapMention', 'Tap Mention');
-    const tid = snow(Date.now(), 991);
-    M.x.timelines.u97 = [{ id: tid, text: 'big news today', created_at: new Date().toISOString() }];
-    post(alpha, 'x.com/TapMention');
-    const r = await reportMatching('<b>@TapMention</b> belum opt-in — siap dikomentari');
-    assert.match(r, /💬 = komentar \+ like \+ follow sekaligus/);
-    // X menolak komentar API untuk tweet ini → like & follow tetap terkirim, tombol 💬 jadi link ✍️ Balas di X
-    const [replies, likes, follows] = ['reply', 'like', 'follow'].map((n) => xcalls(n).length);
-    M.x.failNext.reply = mentionOnlyErr();
-    await tap(ADMIN, `mx:c:fourtis:${tid}`);
-    assert.match(lastAnswer(), /dibalas dari app X: tekan ✍️ Balas di X · Fourtis[\s\S]*❤️ di-like, 👤 di-follow/);
-    assert.equal(xcalls('reply').length, replies + 1); // hanya percobaan yang ditolak
-    assert.deepEqual(xcalls('like').slice(likes).map((c) => [c[2], c.at(-1)]), [[tid, 'k']]);
-    assert.deepEqual(xcalls('follow').slice(follows).map((c) => [c[2], c.at(-1)]), [['u97', 'k']]);
-    const kb = lastEdit();
-    assert.deepEqual(kb[0].map((k) => k.text), ['✍️ Balas di X · Fourtis', '✅ Liked · Fourtis', '✅ Followed · Fourtis']);
-    assert.equal(new URL(kb[0][0].url).searchParams.get('in_reply_to'), tid);
-    assert.equal(new URL(kb[0][0].url).searchParams.get('text'), db.manual[tid].texts.fourtis);
-    assert.equal(kb[1][0].callback_data, `mx:c:dexvra:${tid}`); // Dexvra belum ditolak X: tetap 💬 Kirim
-    assert.ok(!db.manual[tid].done['c:fourtis']);
-    assert.ok(!db.brandDown.fourtis);
-    // Laporan ke channel: like & follow sukses, komentar lewat app X
-    const rep1 = await reportMatching('Project: <b>@TapMention</b>\n💬 Komentar ❌');
-    assert.match(rep1, /^✅ <b>Aksi terkirim<\/b> · Fourtis \(@fourtisbot\)\nProject: <b>@TapMention<\/b>\n💬 Komentar ❌ X hanya mengizinkan lewat app X \(✍️ Balas di X\)\n❤️ Like ✅\n👤 Follow ✅$/);
-    // Tombol 💬 lama di tweet yang sama: tidak memanggil API lagi
-    await tap(ADMIN, `mx:c:fourtis:${tid}`);
-    assert.equal(xcalls('reply').length, replies + 1);
-    assert.match(lastAnswer(), /Balas di X|… di X/);
-
-    // Tweet project lain: Fourtis tetap 💬 Kirim lewat API (penolakan X berlaku per tweet, bukan per akun)
-    users.tapmentiontwo = user('u96', 'TapMentionTwo', 'Tap Two');
-    const tid2 = snow(Date.now(), 992);
-    M.x.timelines.u96 = [{ id: tid2, text: 'another update', created_at: new Date().toISOString() }];
-    post(alpha, 'x.com/TapMentionTwo');
-    const r2 = await reportMatching('<b>@TapMentionTwo</b> belum opt-in — siap dikomentari');
-    assert.equal(keyboardOf(r2)[0][0].callback_data, `mx:c:fourtis:${tid2}`);
-    // Follow kena limit X saat 💬: komentar tetap terkirim, akun tidak dijeda
-    M.x.failNext.follow = rateLimitError({ reset: Math.floor(Date.now() / 1000) + 900 });
-    await tap(ADMIN, `mx:c:fourtis:${tid2}`);
-    assert.equal(repliesTo(tid2).length, 1);
-    assert.match(lastAnswer(), /✅ Komentar terkirim dari Fourtis[\s\S]*❤️ di-like$/);
-    assert.ok(!db.pausedUntil.fourtis || db.pausedUntil.fourtis < Date.now());
-    assert.deepEqual(lastEdit()[0].map((k) => k.text), ['✅ Terkirim · Fourtis', '✅ Liked · Fourtis', '👤 Follow · Fourtis']);
-    const rep2 = await reportMatching('Project: <b>@TapMentionTwo</b>\n💬 Komentar ✅');
-    assert.equal(rep2, `✅ <b>Aksi terkirim</b> · Fourtis (@fourtisbot)\nProject: <b>@TapMentionTwo</b>\n` +
-      `💬 Komentar ✅ "${db.manual[tid2].texts.fourtis}"\n❤️ Like ✅\n👤 Follow ❌ limit X`);
-    assert.deepEqual(keyboardOf(rep2)[0].map((k) => k.url), [
-      `https://x.com/TapMentionTwo/status/${tid2}`, `https://x.com/i/status/${db.manual[tid2].replyId}`
-    ]);
-
-    // Like ditolak X lewat API (paket / izin app) → tombol jadi link ❤️ Like di X, tombol lama tidak memanggil API lagi
-    M.x.failNext.like = xErr(403, 'You are not permitted to perform this action.');
-    await tap(ADMIN, `mx:l:dexvra:${tid2}`);
-    assert.match(lastAnswer(), /X menolak Like lewat API[\s\S]*tekan Like/);
-    const like = lastEdit()[1].find((k) => k.text === '❤️ Like di X · Dexvra');
-    assert.equal(like.url, `https://x.com/intent/like?tweet_id=${tid2}`);
-    const n = xcalls('like').length;
-    await tap(ADMIN, `mx:l:dexvra:${tid}`);
-    assert.equal(xcalls('like').length, n);
-    // 💬 Dexvra: like dilewati (lewat link X), follow tetap lewat API
-    await tap(ADMIN, `mx:c:dexvra:${tid2}`);
-    assert.equal(xcalls('like').length, n);
-    assert.equal(xcalls('follow').at(-1).at(-1), 'dk');
-    // Diblokir project bukan batasan app: Follow tetap lewat API
-    M.x.failNext.follow = xErr(403, 'You have been blocked from following this account.');
-    const reportsBefore = reports().length;
-    await tap(ADMIN, `mx:f:fourtis:${tid2}`);
-    assert.ok(!db.brands.fourtis.viaX?.f);
-    assert.equal(reports().length, reportsBefore); // gagal: tidak ada laporan sukses
-    // Follow saja (1 tekan) berhasil → laporan Follow ✅
-    await tap(ADMIN, `mx:f:fourtis:${tid2}`);
-    assert.equal(await reportMatching('Project: <b>@TapMentionTwo</b>\n👤 Follow ✅'),
-      '✅ <b>Aksi terkirim</b> · Fourtis (@fourtisbot)\nProject: <b>@TapMentionTwo</b>\n👤 Follow ✅');
-    assert.ok(!db.brandDown.fourtis && !db.brandDown.dexvra);
-  } finally {
-    db.auto.manualAssist = false;
-    delete db.brands.dexvra.viaX;
-  }
-});
-
 await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {
   users.brandproj = user('u26', 'BrandProj', 'Brand Project');
   M.x.timelines.u26 = [{ id: snow(now, 500), text: 'brand news', created_at: new Date().toISOString() }];
@@ -846,30 +758,6 @@ await test('tweet "hanya akun yang di-mention" dilewati dari awal, kecuali akun 
   await until(() => xcalls('reply').filter((r) => r[1].includes('Mention Project')).length === 2, '2 komentar MentionProj');
   const ids = xcalls('reply').filter((r) => r[1].includes('Mention Project')).map((r) => r[2]);
   assert.deepEqual(ids, [b.id, c.id]);
-});
-
-await test('project opt-in: X menolak komentar ke satu tweet → tweet itu disiapkan (✍️ Balas di X), tweet lain tetap otomatis, rem darurat tidak terpicu', async () => {
-  const t1 = optedIn('OnlyMentionA');
-  const t2 = optedIn('OnlyMentionB');
-  M.x.failNext.reply = mentionOnlyErr();
-  post(alpha, 'x.com/OnlyMentionA');
-  const r = await reportMatching('<b>@OnlyMentionA</b> (opt-in)');
-  assert.match(r, /Komentar siap/);
-  const b = keyboardOf(r).flat().find((k) => k.text === '✍️ Balas di X · Fourtis');
-  assert.equal(new URL(b.url).searchParams.get('in_reply_to'), t1);
-  assert.match(new URL(b.url).searchParams.get('text'), /OnlyMentionA/);
-  assert.equal(repliesTo(t1).length, 1); // hanya percobaan yang ditolak X
-  assert.equal(xcalls('like').filter((c) => c[2] === t1).length, 0); // tanpa tombol: tidak ada like/follow otomatis
-  // Tweet project lain tetap dikomentari otomatis lewat API
-  post(alpha, 'x.com/OnlyMentionB');
-  await until(() => repliesTo(t2).length, 'komentar API OnlyMentionB');
-  await reportMatching('Project: <b>@OnlyMentionB</b>');
-  // 3x ditolak berturut-turut tetap bukan masalah akun
-  const more = ['OnlyMentionC', 'OnlyMentionD', 'OnlyMentionE'].map((n) => optedIn(n));
-  M.x.failNext.reply = [mentionOnlyErr(), mentionOnlyErr(), mentionOnlyErr()];
-  for (const n of ['OnlyMentionC', 'OnlyMentionD', 'OnlyMentionE']) post(alpha, `x.com/${n}`);
-  await until(() => more.every((t) => db.manual[t]?.noApi?.fourtis), '3 komentar disiapkan');
-  assert.ok(!db.brandDown.fourtis);
 });
 
 await test('project memblokir akun → opt-in brand itu dihentikan, tidak dicoba lewat akun lain', async () => {
