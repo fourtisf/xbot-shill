@@ -283,9 +283,13 @@ await test('/start dari admin → panel tombol (dan menu admin dipasang ulang)',
 await test('Jeda & Batas: klik preset langsung mengubah nilai', async () => {
   let p = await tap(ADMIN, 'm:lim');
   assert.match(p.text, /Jeda &amp; Batas/);
+  // Judul tiap pengaturan selebar layar (tidak terpotong), pilihan angkanya di baris bawahnya
+  const kb = p.reply_markup.inline_keyboard;
+  assert.deepEqual(kb.slice(0, 2).map((r) => r.map((b) => b.text)), [['1️⃣ Jeda antar aksi'], ['30-90 dtk', '1-3 mnt', '3-6 mnt', '5-10 mnt']]);
+  assert.match(p.text, /Contoh<\/b> dengan setelan ini: project opt-in punya 10 tweet → bot berkomentar di \d+ tweet terbarunya/);
   p = await tap(ADMIN, 'm:set:limits.maxPerHour:30');
   assert.equal(db.limits.maxPerHour, 30);
-  assert.ok(buttonsOf(p).some((b) => b.text === '✅30'));
+  assert.ok(buttonsOf(p).some((b) => b.text === '✅ 30x'));
   p = await tap(ADMIN, 'm:gap:180:360');
   assert.deepEqual([db.limits.minDelaySec, db.limits.maxDelaySec], [180, 360]);
   assert.match(p.text, /3 menit–6 menit/);
@@ -487,7 +491,7 @@ await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat to
   // dari panel Otomatis juga bisa, panel Otomatis tetap tampil
   q = await tap(ADMIN, 'm:twtog:dexvra:auto');
   assert.equal(db.brands.dexvra.ownTweetEnabled, true);
-  assert.match(q.text, /Tweet bot \(project belum opt-in\): Fourtis ON · Dexvra ON/);
+  assert.match(q.text, /Tweet bot: Fourtis ON · Dexvra ON/);
   assert.ok(dataOf(q).includes('m:twtog:fourtis:auto'));
   await tap(ADMIN, 'm:twtog:dexvra:auto');
   assert.equal(db.brands.dexvra.ownTweetEnabled, false);

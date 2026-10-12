@@ -1240,10 +1240,12 @@ const accIcon = (b) => (!clients[b] ? '❌' : isDown(b) ? '🛑' : limited(b) ? 
 const chunk = (a, n) => a.reduce((r, x, i) => (i % n ? r[r.length - 1].push(x) : r.push([x]), r), []);
 
 // Satu baris pilihan: label + nilai preset; nilai yang aktif diberi ✅
-function optionRow(label, path, values, fmt = String) {
+// Judul pengaturan selebar layar (tidak terpotong di HP), pilihan angkanya di baris bawahnya
+function optionRows(label, path, values, fmt = String) {
   const [o, k] = path.split('.');
-  return [btn(label, 'm:noop'), ...values.map((v) => btn(`${db[o][k] === v ? '✅' : ''}${fmt(v)}`, `m:set:${path}:${v}`))];
+  return [[btn(label, 'm:noop')], values.map((v) => btn(`${db[o][k] === v ? '✅ ' : ''}${fmt(v)}`, `m:set:${path}:${v}`))];
 }
+const mnt = (v) => `${v} mnt`;
 
 function homePanel() {
   const acc = Object.keys(db.brands).map((b) => `${esc(brandName(b))} ${accIcon(b)}`).join(' · ');
@@ -1322,18 +1324,28 @@ function optPanel() {
 const GAPS = [[30, 90], [60, 180], [180, 360], [300, 600]];
 function limPanel() {
   const { minDelaySec: lo, maxDelaySec: hi } = db.limits;
+  const { replyGapMin: gap, maxRepliesPerProjectPerDay: perDay } = db.auto;
+  const n = db.filter.tweetsPerProject;
   return {
-    text: `⏱ <b>Jeda &amp; Batas</b> (berlaku per akun X)\n\nJeda antar aksi: ${fmtGap()}\nJeda komentar ke project yang sama: ${db.auto.replyGapMin} menit\n` +
-      `Tweet terbaru yang dikomentari: ${db.filter.tweetsPerProject}\nMaks. komentar per project/hari: ${db.auto.maxRepliesPerProjectPerDay}\n` +
-      `Maks. aksi per jam: ${db.limits.maxPerHour} · per hari: ${db.limits.maxPerDay}\n\nNilai lain: /jeda 2 4 · /limits maxPerHour 15`,
+    text: '⏱ <b>Jeda &amp; Batas</b>\nMengatur seberapa cepat dan seberapa banyak bot berkomentar. ' +
+      'Berlaku untuk tiap akun X sendiri-sendiri.\n\n' +
+      `1️⃣ <b>Jeda antar aksi: ${fmtGap()}</b>\nBot menunggu selama ini sebelum komentar berikutnya, supaya terlihat seperti manusia.\n\n` +
+      `2️⃣ <b>Jarak ke project yang sama: ${gap} menit</b>\nKomentar ke satu project tidak beruntun, minimal ${gap} menit sekali.\n\n` +
+      `3️⃣ <b>Tweet yang dikomentari: ${n} terbaru</b>\nHanya ${n} tweet paling baru dari tiap project yang dikomentari.\n\n` +
+      `4️⃣ <b>Maks. komentar per project: ${perDay}x sehari</b>\n\n` +
+      `5️⃣ <b>Batas akun: ${db.limits.maxPerHour}x per jam, ${db.limits.maxPerDay}x per hari</b>\nTotal semua komentar + tweet dari satu akun. ` +
+      'Lewat batas → bot menunggu sendiri.\n\n' +
+      `📌 <b>Contoh</b> dengan setelan ini: project opt-in punya 10 tweet → bot berkomentar di ${Math.min(n, perDay)} tweet terbarunya, ` +
+      `satu per satu dengan jarak ${gap} menit.\n\nTekan angka di bawah untuk mengubah (✅ = yang dipakai sekarang).\n` +
+      '<i>Angka lain: /jeda 2 4 (jeda acak 2–4 menit) · /limits maxPerHour 15</i>',
     rows: [
-      [btn('Jeda aksi', 'm:noop'), ...GAPS.map(([a, b]) =>
-        btn(`${lo === a && hi === b ? '✅' : ''}${a < 60 ? `${a}-${b}d` : `${a / 60}-${b / 60}m`}`, `m:gap:${a}:${b}`))],
-      optionRow('Per project', 'auto.replyGapMin', [2, 5, 10, 30], (v) => `${v}m`),
-      optionRow('Tweet baru', 'filter.tweetsPerProject', [1, 2, 3, 5]),
-      optionRow('Komen/hari', 'auto.maxRepliesPerProjectPerDay', [1, 2, 3, 5]),
-      optionRow('Aksi/jam', 'limits.maxPerHour', [10, 20, 30, 50]),
-      optionRow('Aksi/hari', 'limits.maxPerDay', [30, 50, 100, 200]),
+      [btn('1️⃣ Jeda antar aksi', 'm:noop')],
+      GAPS.map(([a, b]) => btn(`${lo === a && hi === b ? '✅ ' : ''}${a < 60 ? `${a}-${b} dtk` : `${a / 60}-${b / 60} mnt`}`, `m:gap:${a}:${b}`)),
+      ...optionRows('2️⃣ Jarak ke project yang sama', 'auto.replyGapMin', [2, 5, 10, 30], mnt),
+      ...optionRows('3️⃣ Berapa tweet terbaru dikomentari', 'filter.tweetsPerProject', [1, 2, 3, 5], (v) => `${v} tweet`),
+      ...optionRows('4️⃣ Maks. komentar per project sehari', 'auto.maxRepliesPerProjectPerDay', [1, 2, 3, 5], (v) => `${v}x`),
+      ...optionRows('5️⃣ Batas akun per JAM', 'limits.maxPerHour', [10, 20, 30, 50], (v) => `${v}x`),
+      ...optionRows('5️⃣ Batas akun per HARI', 'limits.maxPerDay', [30, 50, 100, 200], (v) => `${v}x`),
       HOME
     ]
   };
@@ -1341,14 +1353,19 @@ function limPanel() {
 function fltPanel() {
   const f = db.filter;
   return {
-    text: `🔎 <b>Filter project</b>\n\nMin. followers: ${f.minFollowers}\nMin. umur akun: ${f.minAgeDays} hari\nCooldown per project: ${f.cooldownDays} hari\n` +
-      `Umur tweet maks.: ${f.maxTweetAgeHours} jam\nKata terlarang: ${esc(f.blacklist.join(', ') || '-')}`,
+    text: '🔎 <b>Filter project</b>\nProject yang tidak lolos filter dilewati (tidak dikomentari) dan dilaporkan ke channel laporan.\n\n' +
+      `1️⃣ <b>Min. followers: ${f.minFollowers}</b>\nAkun X project harus punya minimal segini followers.\n\n` +
+      `2️⃣ <b>Min. umur akun: ${f.minAgeDays} hari</b>\nAkun X yang lebih baru dari ini dilewati (akun baru sering scam).\n\n` +
+      `3️⃣ <b>Jeda project yang sama: ${f.cooldownDays} hari</b>\nProject yang sudah diproses dari channel tidak diproses lagi selama ini.\n\n` +
+      `4️⃣ <b>Umur tweet maks.: ${f.maxTweetAgeHours} jam</b>\nTweet yang lebih lama dari ini tidak dikomentari.\n\n` +
+      `5️⃣ <b>Kata terlarang: ${esc(f.blacklist.join(', ') || '-')}</b>\nProject dengan kata ini di nama/bio dilewati.\n\n` +
+      'Tekan angka di bawah untuk mengubah (✅ = yang dipakai sekarang).',
     rows: [
-      optionRow('Followers', 'filter.minFollowers', [100, 500, 1000, 5000], (v) => (v >= 1000 ? `${v / 1000}k` : `${v}`)),
-      optionRow('Umur akun', 'filter.minAgeDays', [0, 7, 14, 30], (v) => `${v} hr`),
-      optionRow('Cooldown', 'filter.cooldownDays', [1, 3, 7, 14], (v) => `${v} hr`),
-      optionRow('Tweet maks', 'filter.maxTweetAgeHours', [12, 24, 48, 72], (v) => `${v} j`),
-      [btn('✏️ Ubah kata terlarang', 'm:ask:blacklist')],
+      ...optionRows('1️⃣ Min. followers', 'filter.minFollowers', [100, 500, 1000, 5000], (v) => (v >= 1000 ? `${v / 1000}rb` : `${v}`)),
+      ...optionRows('2️⃣ Min. umur akun X', 'filter.minAgeDays', [0, 7, 14, 30], (v) => `${v} hari`),
+      ...optionRows('3️⃣ Jeda project yang sama', 'filter.cooldownDays', [1, 3, 7, 14], (v) => `${v} hari`),
+      ...optionRows('4️⃣ Umur tweet maks.', 'filter.maxTweetAgeHours', [12, 24, 48, 72], (v) => `${v} jam`),
+      [btn('5️⃣ ✏️ Ubah kata terlarang', 'm:ask:blacklist')],
       HOME
     ]
   };
@@ -1356,19 +1373,24 @@ function fltPanel() {
 function autoPanel() {
   const a = db.auto;
   return {
-    text: `🤖 <b>Otomatis</b>\n\nPantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'} (tiap ${a.watchIntervalMin} menit)\n` +
-      `Baca channel publik (web t.me): tiap ${a.webPollSec} detik\n` +
-      `Tweet bot (project belum opt-in): ${Object.values(db.brands).map((v) => `${esc(v.name)} ${v.ownTweetEnabled ? 'ON' : 'OFF'}`).join(' · ')}\n` +
-      `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00\n` +
-      `Opt-in publik: ${a.publicOptin ? 'ON — project bisa /optin sendiri' : 'OFF — bot privat, hanya Anda'}`,
+    text: '🤖 <b>Otomatis</b>\nHal-hal yang bot kerjakan sendiri.\n\n' +
+      `⏱ <b>Pantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'}</b> (cek tiap ${a.watchIntervalMin} menit)\n` +
+      'Tweet baru dari project opt-in langsung dikomentari, tanpa menunggu ada post di channel.\n\n' +
+      `📢 <b>Baca channel publik: tiap ${a.webPollSec} detik</b>\nSeberapa sering bot membuka halaman web channel target.\n\n` +
+      `🐦 <b>Tweet bot: ${Object.values(db.brands).map((v) => `${esc(v.name)} ${v.ownTweetEnabled ? 'ON' : 'OFF'}`).join(' · ')}</b>\n` +
+      'ON = akun brand membuat tweet sendiri tentang project yang belum opt-in.\n\n' +
+      `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
+      `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
+      `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +
+      (a.publicOptin ? 'Project bisa daftar sendiri lewat /optin.' : 'Bot privat, hanya Anda. ON = project bisa daftar sendiri lewat /optin.'),
     rows: [
       [btn(`Pantau tweet opt-in: ${a.watchOptins ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.watchOptins')],
-      optionRow('Tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], (v) => `${v}m`),
-      optionRow('Baca channel web', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v}d`),
+      ...optionRows('⏱ Cek tweet baru opt-in tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], mnt),
+      ...optionRows('📢 Baca channel publik tiap', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v} dtk`),
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       ...chunk(Object.entries(db.brands).map(([b, v]) => btn(`Tweet bot ${v.name}: ${v.ownTweetEnabled ? '✅ ON' : '❌ OFF'}`, `m:twtog:${b}:auto`)), 2),
-      optionRow('Ringkasan', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
+      ...optionRows('📊 Ringkasan harian jam', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
       HOME
     ]
   };
