@@ -1322,8 +1322,11 @@ function fltPanel() {
     text: '🔎 <b>Filter project</b>\nProject yang tidak lolos filter dilewati (tidak dikomentari) dan dilaporkan ke channel laporan.\n\n' +
       `1️⃣ <b>Min. followers: ${f.minFollowers}</b>\nAkun X project harus punya minimal segini followers.\n\n` +
       `2️⃣ <b>Min. umur akun: ${f.minAgeDays} hari</b>\nAkun X yang lebih baru dari ini dilewati (akun baru sering scam).\n\n` +
-      `3️⃣ <b>Jeda project yang sama: ${f.cooldownDays} hari</b>\nProject yang sudah diproses dari channel tidak diproses lagi selama ini.\n\n` +
-      `4️⃣ <b>Umur tweet maks.: ${f.maxTweetAgeHours} jam</b>\nTweet yang lebih lama dari ini tidak dikomentari.\n\n` +
+      `3️⃣ <b>Jeda project yang sama: ${f.cooldownDays} hari</b>\nKalau project yang sama di-posting lagi di channel (mis. PAID lalu BOOST), ` +
+      `bot mengabaikannya selama ${f.cooldownDays} hari supaya tidak dikomentari/dilaporkan berulang. ` +
+      'Tweet BARU project opt-in tetap dikomentari lewat pantauan otomatis.\n\n' +
+      `4️⃣ <b>Umur tweet maks.: ${f.maxTweetAgeHours} jam</b>\nBot hanya berkomentar di tweet project yang diposting dalam ${f.maxTweetAgeHours} jam terakhir. ` +
+      'Tweet yang lebih lama dilewati (sudah sepi, komentar telat terlihat aneh).\n\n' +
       `5️⃣ <b>Kata terlarang: ${esc(f.blacklist.join(', ') || '-')}</b>\nProject dengan kata ini di nama/bio dilewati.\n\n` +
       'Tekan angka di bawah untuk mengubah (✅ = yang dipakai sekarang).',
     rows: [
