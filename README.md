@@ -93,7 +93,7 @@ pm2 logs xagent                  # lihat log
 
 1. DM bot: `/addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET` lalu `/addaccount dexvra ...` (pesan otomatis dihapus)
 2. `/addchannel @channeltarget fourtis` atau `... dexvra` (boleh juga link `https://t.me/channeltarget`; ulangi untuk tiap channel). Channel publik langsung terbaca tanpa admin — bot membalas berapa post yang terbaca. Kalau bot bilang *belum bisa dibaca*: cek ejaan username, atau channel itu privat (jadikan bot admin)
-3. Buat channel laporan, jadikan bot admin, lalu posting `/setreport` di channel itu (akun di `ADMIN_IDS` harus admin channel tersebut)
+3. Buat channel laporan, jadikan bot admin (izin *Post Messages*), lalu /menu → 📨 Channel laporan → kirim ID channel (`-100…`). Bisa juga `/setreport -100…` di DM bot, atau posting `/setreport` di channel itu. Bot mengirim pesan tes dulu; kalau gagal, bot memberi tahu dan channel lama tetap dipakai
 4. Ganti template contoh: `/tpls` untuk lihat, `/addtpl dexvra ...`, `/addtweet fourtis ...`, `/deltpl dexvra 1`
 5. `/status` dan `/accounts` untuk cek semua sudah ✅
 

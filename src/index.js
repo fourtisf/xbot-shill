@@ -824,7 +824,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 
 <b>Channel</b> (publik: bot tidak perlu admin)
 /addchannel @channel [brand|all] · /delchannel @channel · /channels
-/setreport — jalankan di channel laporan
+/setreport -100… — atur channel laporan (atau /menu → 📨 Channel laporan)
 
 <b>Template per brand</b> (variabel: {name} {handle} {channel})
 /tpls [brand] — lihat
@@ -1070,10 +1070,26 @@ bot.command('channels', (ctx) => replyLong(ctx, db.channels.length
   ? db.channels.map(chanLine).join('\n')
   : 'Belum ada channel.'));
 
-bot.command('setreport', (ctx) => {
+// Kirim pesan tes dulu; disimpan hanya kalau bot benar-benar bisa posting ke sana
+async function setReportChat(target) {
+  const id = /^-?\d+$/.test(String(target)) ? Number(target) : target;
+  try {
+    const m = await bot.telegram.sendMessage(id, '📊 Channel laporan aktif — semua laporan bot dikirim ke sini.');
+    db.reportChat = m.chat?.id ?? id; save();
+    return `✅ Laporan sekarang dikirim ke ${m.chat?.title || id}. Di sana muncul pesan "Channel laporan aktif".`;
+  } catch (e) {
+    return `❌ Bot tidak bisa mengirim pesan ke ${id} (${e.description || e.message}).\n` +
+      'Pastikan bot sudah jadi ADMIN di channel itu dengan izin "Post Messages", dan ID-nya benar (diawali -100).' +
+      (db.reportChat ? ' Channel laporan lama tetap dipakai.' : '');
+  }
+}
+const reportTarget = (s) => (/^-?\d+$/.test(s) ? (/^-100\d{5,}$/.test(s) ? s : null) : normChannel(s));
+bot.command('setreport', async (ctx) => {
   const arg = ctx.message?.text.split(/\s+/)[1];
-  db.reportChat = arg || ctx.chat.id; save();
-  bot.telegram.sendMessage(db.reportChat, '📊 Channel laporan aktif.').catch((e) => console.error(e.message));
+  if (!arg) return ctx.reply(await setReportChat(ctx.chat.id)); // laporan ke chat ini
+  const t = reportTarget(arg);
+  if (!t) return ctx.reply('Format: /setreport -1001234567890 (ID channel laporan) atau /setreport @namachannel');
+  ctx.reply(await setReportChat(t));
 });
 bot.on('channel_post', async (ctx, next) => {
   if (ctx.channelPost.text?.startsWith('/setreport')) {
@@ -1252,12 +1268,13 @@ function homePanel() {
   return {
     text: `⚙️ <b>Panel pengaturan</b>\n\nStatus: ${db.paused ? '⏸ pause' : '🟢 jalan'}${LISTENER ? '' : ' · mode bot saja'}\n` +
       `Akun X: ${acc}\nChannel: ${targets.size}/${db.channels.length} terpantau · Opt-in: ${Object.keys(db.optins).length} · Antrian: ${db.queue.length}` +
-      (db.reportChat ? '' : '\n⚠️ Channel laporan belum diatur — posting /setreport di channel laporan') + '\n\nPilih menu:',
+      (db.reportChat ? '' : '\n⚠️ Channel laporan belum diatur — tekan 📨 Channel laporan') + '\n\nPilih menu:',
     rows: [
       [btn('📊 Status', 'm:status'), btn('👤 Akun X', 'm:acc')],
       [btn('📢 Channel', 'm:ch'), btn('📝 Template', 'm:tplb')],
       [btn('🤝 Opt-in', 'm:opt'), btn('⏱ Jeda & Batas', 'm:lim')],
       [btn('🔎 Filter', 'm:flt'), btn('🤖 Otomatis', 'm:auto')],
+      [btn(`📨 Channel laporan ${db.reportChat ? '✅' : '❌'}`, 'm:ask:report')],
       [db.paused ? btn('▶️ Jalankan lagi', 'm:resume') : btn('⏸ Pause semua', 'm:pause'), btn('❓ Bantuan', 'm:help')]
     ]
   };
@@ -1505,6 +1522,11 @@ const PROMPTS = {
     `Contoh: <code>${f === 'k' ? 'Love seeing {name} keep shipping 🚀' : '🚀 New project: {name}\nx.com/{handle}'}</code>\n/batal untuk batal.`,
   optin: () => '🤝 Kirim @handle X project yang sudah setuju (mis. beli paket listing). /batal untuk batal.',
   deloptin: () => '🗑 Kirim @handle project yang opt-in-nya mau dihapus. /batal untuk batal.',
+  report: () => '📨 <b>Channel laporan</b>\nSemua laporan bot (komentar terkirim, project baru, error, ringkasan harian) dikirim ke sini.\n' +
+    `Sekarang: ${db.reportChat ? `<code>${esc(String(db.reportChat))}</code>` : 'belum diatur'}\n\n` +
+    '1. Jadikan bot ADMIN di channel laporan (izin Post Messages).\n' +
+    '2. Kirim ID channel itu di sini, contoh <code>-1001234567890</code> (atau @username channel).\n\n' +
+    'Bot langsung mengirim pesan tes ke sana. /batal untuk batal.',
   blacklist: () => '✏️ Kirim kata terlarang dipisah koma, contoh: <code>scam, rug, presale</code>\nKirim <code>-</code> untuk mengosongkan. /batal untuk batal.'
 };
 
@@ -1607,6 +1629,14 @@ async function handleInput(ctx, a) {
       delete db.optins[h]; save();
       await ctx.reply(`🗑 Opt-in @${h} dihapus.`);
       return showPanel(ctx, optPanel(), false);
+    }
+    case 'report': {
+      const t = reportTarget(text.split(/\s+/)[0]);
+      if (!t) return again('Format salah. Kirim ID channel diawali -100, contoh -1001234567890. Kirim lagi, atau /batal');
+      const r = await setReportChat(t);
+      if (r.startsWith('❌')) return again(`${r}\nKirim lagi setelah diperbaiki, atau /batal`);
+      await ctx.reply(r);
+      return showPanel(ctx, homePanel(), false);
     }
     case 'blacklist':
       db.filter.blacklist = text === '-' ? [] : text.split(',').map((w) => w.trim()).filter(Boolean);

@@ -605,6 +605,30 @@ await test('/setreport di DM dan di channel (bot mode) mengatur channel laporan'
   db.reportChat = REPORT;
 });
 
+await test('Channel laporan lewat tombol: ID dicek dulu dengan pesan tes; ID salah / bot belum admin → ditolak, yang lama tetap', async () => {
+  let p = await tap(ADMIN, 'm:home');
+  assert.ok(dataOf(p).includes('m:ask:report'));
+  await tap(ADMIN, 'm:ask:report');
+  assert.match(lastPanel(ADMIN).text, /Jadikan bot ADMIN di channel laporan/);
+  assert.match(await dm(ADMIN, 'bukan-id'), /Format salah/);
+  M.unreachable = ['-1003976150269'];
+  assert.match(await dm(ADMIN, '-1003976150269'), /Bot tidak bisa mengirim pesan ke -1003976150269 \(Bad Request: chat not found\)[\s\S]*Channel laporan lama tetap dipakai/);
+  assert.equal(db.reportChat, REPORT);
+  M.unreachable = [];
+  M.botChats['-1003976150269'] = { id: -1003976150269, type: 'channel', title: 'Laporan Fourtis' };
+  await dm(ADMIN, '-1003976150269'); // masih menunggu input: kirim lagi setelah bot dijadikan admin
+  assert.equal(db.reportChat, -1003976150269);
+  assert.ok(messagesTo(-1003976150269).some((m) => m.includes('Channel laporan aktif')));
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('✅ Laporan sekarang dikirim ke Laporan Fourtis')));
+  // lewat perintah juga dicek
+  M.unreachable = ['-1009999999'];
+  assert.match(await dm(ADMIN, '/setreport -1009999999'), /Bot tidak bisa mengirim/);
+  assert.equal(db.reportChat, -1003976150269);
+  assert.match(await dm(ADMIN, '/setreport abc'), /Format: \/setreport/);
+  M.unreachable = [];
+  db.reportChat = REPORT;
+});
+
 await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', async () => {
   const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands, channelBrand: db.channelBrand });
   const skip = /^m:(accdelok|chdel|tdel|optadd|chadd):/; // aksi hapus/tambah diuji terpisah

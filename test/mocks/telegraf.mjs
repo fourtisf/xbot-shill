@@ -96,8 +96,14 @@ Telegram.prototype.callApi = async function (method, payload = {}) {
     }
     case 'getChatMember':
       return { status: (M.botAdminIn || []).includes(payload.chat_id) ? 'administrator' : 'left', user: { id: payload.user_id } };
-    case 'sendMessage':
-      return { message_id: M.botCalls.length, date: 0, chat: { id: payload.chat_id }, text: payload.text };
+    case 'sendMessage': {
+      // Chat yang tidak bisa dikirimi bot (bot bukan admin / ID salah) ditolak seperti Telegram asli
+      if ((M.unreachable || []).map(String).includes(String(payload.chat_id))) {
+        throw Object.assign(new Error('400: Bad Request: chat not found'), { code: 400, description: 'Bad Request: chat not found' });
+      }
+      const chat = Object.values(M.botChats || {}).find((c) => String(c.id) === String(payload.chat_id));
+      return { message_id: M.botCalls.length, date: 0, chat: chat || { id: payload.chat_id }, text: payload.text };
+    }
     default:
       return true;
   }
