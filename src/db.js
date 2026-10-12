@@ -66,6 +66,7 @@ const defaults = {
     autoVerify: true, // cek bio project yang /optin tiap beberapa menit, tanpa perlu /verify
     verifyIntervalMin: 10,
     pendingExpireDays: 3,
+    webPollSec: 30, // baca halaman web channel publik (t.me/s/…) tiap N detik
     catchUpMin: 5, // ambil post channel yang terlewat (bot mati / koneksi putus)
     catchUpMaxAgeHours: 6,
     dailyReportHour: 9, // jam ringkasan harian + backup (zona waktu TZ di .env)
@@ -80,7 +81,7 @@ const defaults = {
   refills: {}, // handle -> [waktu pindah ke tweet lain] (maks. 3 per 24 jam)
   brandDown: {}, // brand -> { at, reason }: akun dihentikan rem darurat, jalan lagi dengan /resume brand
   tplLog: {}, // handle / #brand -> template terakhir dipakai (anti komentar kembar)
-  lastSeen: {}, // id channel -> id post terakhir yang sudah dibaca
+  lastSeen: {}, // channel (@nama / -100…) -> id post terakhir yang sudah dibaca
   watchSinceId: {}, // brand -> id tweet terbaru yang sudah dibaca
   stats: {}, // hitungan sejak ringkasan harian terakhir
   lastDaily: null

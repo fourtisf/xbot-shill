@@ -390,25 +390,41 @@ async function processSafe(handle, channelName, t0, chBrand) {
   }
 }
 
-// ---------- Listener channel Telegram ----------
-// Tanpa TG_API_ID/TG_API_HASH/TG_SESSION: mode bot saja — bot membaca post dari channel tempat dia jadi admin.
-// Dengan ketiganya: akun Telegram biasa (listener) membaca channel orang lain yang sudah di-join.
+// ---------- Membaca channel Telegram ----------
+// Tiga cara, dipilih otomatis per channel:
+//  1. web publik: channel publik dibaca dari halaman t.me/s/<channel> — cukup BOT_TOKEN, bot TIDAK perlu admin
+//  2. bot admin: post datang langsung lewat Bot API (channel privat milik sendiri)
+//  3. akun listener (opsional, TG_API_ID/TG_API_HASH/TG_SESSION): akun Telegram biasa yang join channel
 const LISTENER = !!(process.env.TG_API_ID && process.env.TG_API_HASH && process.env.TG_SESSION);
-const NOT_READ = LISTENER ? 'belum join' : 'bot belum admin';
+const NOT_READ = 'belum terbaca';
 let tg = null;
 let tgDown = false;
 let missing = []; // channel di db.channels yang belum bisa dibaca
-const targets = new Map(); // channel di db.channels -> entity Telegram
+const targets = new Map(); // channel di db.channels -> entity Telegram / { username, title } untuk web
+const via = new Map(); // channel -> 'listener' | 'bot' | 'web'
+const VIA = { listener: 'akun listener', bot: 'bot admin', web: 'web publik' };
 const chanKeys = (chat) => [
   chat.username && '@' + chat.username.toLowerCase(),
   ...(chat.usernames || []).map((u) => '@' + u.username.toLowerCase()),
   `-100${chat.id}`, String(chat.id)
 ].filter(Boolean);
 const matchChannel = (chat) => db.channels.find((c) => chanKeys(chat).includes(c.toLowerCase()));
+const chanLine = (c) => `${targets.has(c) ? '✅' : '⚠️'} ${c} → ${brandName(channelBrand(c))}` +
+  (targets.has(c) ? ` · ${VIA[via.get(c)]}` : ` (${NOT_READ})`);
 
-// Dipakai listener live dan catch-up; lastSeen mencegah post diproses dua kali
+// lastSeen satu kunci per channel (nama di db.channels), sama untuk semua cara baca,
+// jadi pindah cara baca (mis. web → bot admin) tidak memproses post yang sama dua kali
+function seenKey(ch, chat) {
+  const old = chat?.id !== undefined && String(chat.id); // format lama: per id chat
+  if (old && db.lastSeen[ch] === undefined && db.lastSeen[old] !== undefined) {
+    db.lastSeen[ch] = db.lastSeen[old]; delete db.lastSeen[old];
+  }
+  return ch;
+}
+
+// Dipakai semua cara baca; lastSeen mencegah post diproses dua kali
 function onChannelPost(msg, chat, t0, ch) {
-  const key = String(chat.id);
+  const key = seenKey(ch, chat);
   if (msg.id <= (db.lastSeen[key] || 0)) return false;
   db.lastSeen[key] = msg.id; save();
   if (db.paused) return false;
@@ -416,20 +432,98 @@ function onChannelPost(msg, chat, t0, ch) {
   for (const h of extractHandles(msg.message || '', urls)) processSafe(h, chat.title || chat.username, t0, channelBrand(ch));
   return true;
 }
+const tooOld = (at) => Date.now() - at > db.auto.catchUpMaxAgeHours * 3600_000;
 
-// Mode bot saja: post channel datang lewat Bot API. Post yang masuk saat bot mati disimpan Telegram
+// Mode bot: post channel datang lewat Bot API. Post yang masuk saat bot mati disimpan Telegram
 // sampai 24 jam, jadi tetap diproses saat bot hidup lagi (maks. catchUpMaxAgeHours)
 function botChannelPost(post) {
   const ch = matchChannel(post.chat);
-  if (!ch) return;
+  if (!ch || via.get(ch) === 'listener') return; // dibaca akun listener
+  if (via.get(ch) !== 'bot') { // bot baru dijadikan admin: langsung pakai jalur bot (instan, tanpa menunggu web)
+    targets.set(ch, post.chat); via.set(ch, 'bot'); missing = missing.filter((m) => m !== ch);
+  }
   const at = post.date * 1000;
-  const key = String(post.chat.id);
-  if (Date.now() - at > db.auto.catchUpMaxAgeHours * 3600_000) {
+  const key = seenKey(ch, post.chat);
+  if (tooOld(at)) {
     db.lastSeen[key] = Math.max(db.lastSeen[key] || 0, post.message_id); save();
     return;
   }
   const msg = { id: post.message_id, message: post.text || post.caption || '', entities: post.entities || post.caption_entities };
   onChannelPost(msg, post.chat, Date.now() - at > 60_000 ? at : Date.now(), ch);
+}
+
+// ---------- Channel publik tanpa admin: halaman web t.me/s/<channel> ----------
+// Channel publik punya halaman pratinjau yang bisa dibuka siapa saja, termasuk tanpa login.
+// Bot membacanya berkala (auto.webPollSec) dan hanya memproses post yang lebih baru dari lastSeen.
+const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+const unescapeHtml = (s) => s.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi,
+  (m, d, h, n) => (d ? String.fromCodePoint(Number(d)) : h ? String.fromCodePoint(parseInt(h, 16)) : ENT[n.toLowerCase()]));
+const webName = (c, chat) => (c.startsWith('@') ? c.slice(1) : chat?.username) || null;
+
+function parseWebPosts(html) {
+  const posts = [];
+  for (const part of html.split('data-post="').slice(1)) {
+    const id = Number(/^\w+\/(\d+)"/.exec(part)?.[1]);
+    if (!id) continue;
+    // Potong di awal post berikutnya / akhir daftar post: info channel (bio, link) tidak ikut terbaca
+    const block = part.split(/tgme_widget_message_wrap|<\/section>|tgme_channel_info/)[0];
+    // Teks post saja (bukan kutipan post yang dibalas); link diambil dari semua href di post (teks, tombol, preview)
+    const text = [...block.matchAll(/class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/g)]
+      .map((m) => unescapeHtml(m[1].replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''))).join('\n');
+    const urls = [...block.matchAll(/href="(https?:[^"]+)"/g)].map((m) => unescapeHtml(m[1]));
+    posts.push({ id, text, urls, date: Date.parse(/datetime="([^"]+)"/.exec(block)?.[1]) });
+  }
+  return posts;
+}
+
+let webPauseUntil = 0;
+// null = tidak ada halaman publik (channel privat / bukan channel / username salah)
+async function fetchWeb(name) {
+  const res = await fetch(`https://t.me/s/${encodeURIComponent(name)}`, {
+    headers: { 'user-agent': WEB_UA, 'accept-language': 'en' }, signal: AbortSignal.timeout(15_000)
+  });
+  if (res.status === 429) webPauseUntil = Date.now() + (Number(res.headers.get('retry-after')) || 60) * 1000;
+  if (!res.ok) throw new Error(`t.me menjawab HTTP ${res.status}`);
+  const html = await res.text();
+  if (!html.includes('data-post="')) return null;
+  const title = /<meta property="og:title" content="([^"]*)"/.exec(html)?.[1];
+  return { title: title ? unescapeHtml(title) : name, posts: parseWebPosts(html) };
+}
+
+const webFail = new Map(); // channel -> gagal berturut-turut
+async function webPoll() {
+  for (const [c, e] of targets) {
+    if (via.get(c) !== 'web' || Date.now() < webPauseUntil) continue;
+    try {
+      const page = await fetchWeb(e.username);
+      if (!page) throw new Error('halaman publik tidak tersedia (channel jadi privat / ganti username?)');
+      if (webFail.get(c) >= 3) await report(`🔌 ${esc(c)} terbaca lagi dari web publik`);
+      webFail.delete(c);
+      e.title = page.title;
+      const key = seenKey(c);
+      if (db.lastSeen[key] === undefined) { // channel baru: mulai dari post terakhir, post lama tidak diproses
+        db.lastSeen[key] = Math.max(0, ...page.posts.map((p) => p.id)); save();
+        continue;
+      }
+      for (const p of page.posts.sort((a, b) => a.id - b.id)) {
+        if (p.id <= db.lastSeen[key] || via.get(c) !== 'web') continue;
+        const at = Math.min(p.date || Date.now(), Date.now()); // jam post asli: laporan menunjukkan jeda baca web yang sebenarnya
+        if (tooOld(at)) { db.lastSeen[key] = p.id; save(); continue; }
+        onChannelPost({ id: p.id, message: p.text, entities: p.urls.map((url) => ({ url })) }, e, at, c);
+      }
+    } catch (err) {
+      const n = (webFail.get(c) || 0) + 1;
+      webFail.set(c, n);
+      console.error(`web ${c}:`, err.message);
+      if (n === 3) await report(`⚠️ Gagal membaca ${esc(c)} dari web publik: ${esc(err.message)} — dicoba ulang otomatis`);
+    }
+  }
+}
+const WEB_POLL_MS = Number(process.env.WEB_POLL_MS) || 0; // dipercepat oleh npm test
+async function webLoop() {
+  try { await webPoll(); } catch (e) { console.error('webPoll:', e); }
+  setTimeout(webLoop, WEB_POLL_MS || Math.max(10, db.auto.webPollSec) * 1000);
 }
 
 async function startListener() {
@@ -454,30 +548,48 @@ async function startListener() {
   console.log('Listener Telegram aktif');
 }
 
-// Cocokkan db.channels dengan channel yang bisa dibaca: di-join akun listener, atau bot jadi admin (mode bot saja)
+// Cocokkan db.channels dengan cara baca yang tersedia: akun listener sudah join → bot admin → web publik
 async function refreshChannels() {
   const before = new Set(targets.keys());
-  targets.clear();
+  const old = new Map([...targets].map(([c, e]) => [c, [e, via.get(c)]]));
+  const chats = new Map();
+  targets.clear(); via.clear();
   if (LISTENER) {
     for (const d of await tg.getDialogs({})) {
       if (!d.isChannel || !d.entity) continue;
-      for (const c of db.channels) if (chanKeys(d.entity).includes(c.toLowerCase())) targets.set(c, d.entity);
+      for (const c of db.channels) if (chanKeys(d.entity).includes(c.toLowerCase())) { targets.set(c, d.entity); via.set(c, 'listener'); }
     }
     // Channel baru dipantau mulai dari post terakhir, post lama tidak diproses
-    for (const e of targets.values()) {
-      const key = String(e.id);
+    for (const [c, e] of targets) {
+      const key = seenKey(c, e);
       if (db.lastSeen[key]) continue;
       const [last] = await tg.getMessages(e, { limit: 1 });
       db.lastSeen[key] = last?.id || 0;
     }
-  } else {
-    bot.botInfo ??= await bot.telegram.getMe();
-    for (const c of db.channels) {
-      try {
-        const chat = await bot.telegram.getChat(c);
-        const m = await bot.telegram.getChatMember(chat.id, bot.botInfo.id);
-        if (['administrator', 'creator'].includes(m.status)) targets.set(c, chat);
-      } catch {} // channel tidak ada / bot bukan anggota
+  }
+  bot.botInfo ??= await bot.telegram.getMe();
+  for (const c of db.channels) {
+    if (targets.has(c)) continue;
+    try {
+      const chat = await bot.telegram.getChat(c); // channel publik: berhasil walau bot bukan anggota
+      chats.set(c, chat);
+      const m = await bot.telegram.getChatMember(chat.id, bot.botInfo.id);
+      if (['administrator', 'creator'].includes(m.status)) { targets.set(c, chat); via.set(c, 'bot'); }
+    } catch {} // channel privat / tidak ada / bot bukan anggota
+  }
+  for (const c of db.channels) {
+    const name = !targets.has(c) && webName(c, chats.get(c));
+    if (!name) continue;
+    try {
+      const page = await fetchWeb(name);
+      if (!page) continue;
+      targets.set(c, { username: name, title: page.title, read: page.posts.length, top: Math.max(0, ...page.posts.map((p) => p.id)) });
+      via.set(c, 'web');
+      const key = seenKey(c, chats.get(c));
+      if (db.lastSeen[key] === undefined) db.lastSeen[key] = Math.max(0, ...page.posts.map((p) => p.id));
+    } catch (e) { // t.me sedang tidak bisa dibuka: yang sudah terpantau lewat web tetap dipantau
+      console.error(`web ${c}:`, e.message);
+      if (old.get(c)?.[1] === 'web') { targets.set(c, old.get(c)[0]); via.set(c, 'web'); }
     }
   }
   save();
@@ -487,13 +599,14 @@ async function refreshChannels() {
 
 // Ambil post yang terlewat (bot mati, koneksi putus) + sambung ulang listener
 async function catchUp() {
-  if (!LISTENER) return; // mode bot saja: Telegram sendiri yang mengirim ulang post yang tertunda
+  if (!LISTENER) return; // tanpa listener: Telegram mengirim ulang post bot yang tertunda, web dibaca ulang tiap putaran
   try {
     if (!tg.connected) await tg.connect();
     const minDate = Date.now() / 1000 - db.auto.catchUpMaxAgeHours * 3600;
     let n = 0;
     for (const [name, e] of targets) {
-      const key = String(e.id);
+      if (via.get(name) !== 'listener') continue;
+      const key = seenKey(name, e);
       const msgs = await tg.getMessages(e, { minId: db.lastSeen[key] || 0, limit: 50 });
       for (const m of [...msgs].sort((a, b) => a.id - b.id)) {
         if (m.date < minDate) { db.lastSeen[key] = Math.max(db.lastSeen[key] || 0, m.id); continue; }
@@ -657,7 +770,7 @@ async function tick() {
     [every(db.auto.verifyIntervalMin), autoVerify, 'Verifikasi opt-in otomatis'],
     [every(targets.size < db.channels.length ? 30 : 360), async () => {
       const joined = await refreshChannels();
-      if (joined.length) await report(`✅ ${LISTENER ? 'Listener sudah join' : 'Bot sudah admin di'} ${esc(joined.join(', '))} — mulai dipantau`);
+      if (joined.length) await report(`✅ Mulai dipantau: ${esc(joined.map((c) => `${c} (${VIA[via.get(c)]})`).join(', '))}`);
     }, 'Cek channel'],
     [true, dailyTasks, 'Ringkasan harian']
   ];
@@ -688,7 +801,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 /accounts — semua brand &amp; akun · /delaccount brand
 /setx ... — sama dengan /addaccount untuk brand utama
 
-<b>Channel</b>
+<b>Channel</b> (publik: bot tidak perlu admin)
 /addchannel @channel [brand] · /delchannel @channel · /channels
 /setreport — jalankan di channel laporan
 
@@ -879,6 +992,20 @@ bot.command(['accounts', 'xstatus'], async (ctx) => {
 });
 
 // ---------- Channel ----------
+// Terima @channel, link t.me/channel (juga t.me/s/channel atau link post), link post privat t.me/c/…, atau ID -100…
+const INVITE = /(?:t|telegram)\.me\/(?:\+|joinchat\/)/i;
+const TME = /^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\//i;
+function normChannel(s) {
+  const priv = new RegExp(TME.source + /c\/(\d{5,})(?:\/\d+)*\/?(?:\?.*)?$/.source, 'i').exec(s);
+  if (priv) return '-100' + priv[1];
+  const m = new RegExp(TME.source + /(?:s\/)?([a-z]\w{3,31})(?:\/\d+)?\/?(?:\?.*)?$/.source, 'i').exec(s);
+  const c = (m ? '@' + m[1] : s).toLowerCase();
+  return /^(@[a-z]\w{3,31}|-100\d{5,})$/.test(c) ? c : null;
+}
+const CH_FORMAT = 'Contoh: @namachannel, link https://t.me/namachannel, atau ID -1001234567890';
+const PRIVATE_LINK = 'Itu link undangan channel PRIVAT — tidak punya halaman publik. Channel privat hanya bisa dibaca kalau bot dijadikan admin di sana' +
+  `${LISTENER ? ' atau akun listener join' : ''}. Setelah itu tambahkan pakai link salah satu post-nya (https://t.me/c/…) atau ID -100….`;
+
 async function addChannel(c, b) {
   const key = c.toLowerCase();
   if (!db.channels.includes(key)) db.channels.push(key);
@@ -886,29 +1013,39 @@ async function addChannel(c, b) {
   save();
   await refreshChannels().catch((e) => console.error('refreshChannels:', e));
   const brand = brandName(channelBrand(key));
+  if (via.get(key) === 'web') {
+    const e = targets.get(key);
+    return `✅ ${c} → ${brand} ditambahkan & dipantau lewat halaman web publik t.me — bot tidak perlu jadi admin.\n` +
+      `Terbaca ${e.read} post terakhir (terbaru #${e.top}); post lama tidak diproses. Post baru diproses dalam ±${db.auto.webPollSec} detik.`;
+  }
   return targets.has(key)
-    ? `✅ ${c} → ${brand} ditambahkan & sudah dipantau.`
-    : LISTENER
-      ? `⚠️ ${c} → ${brand} ditambahkan, tapi akun listener BELUM join channel ini. Join dulu — bot cek ulang otomatis tiap 30 menit.`
-      : `⚠️ ${c} → ${brand} ditambahkan, tapi bot BELUM jadi admin di channel ini. Jadikan bot admin dulu — bot cek ulang otomatis tiap 30 menit.`;
+    ? `✅ ${c} → ${brand} ditambahkan & sudah dipantau (${VIA[via.get(key)]}).`
+    : `⚠️ ${c} → ${brand} ditambahkan, tapi BELUM bisa dibaca: ${key.startsWith('@') ? 'channel privat atau username salah' : 'channel privat'}.\n` +
+      (key.startsWith('@') ? `• Channel publik: cek lagi ejaan (buka t.me/s/${key.slice(1)} di browser — harus muncul daftar post).\n` : '') +
+      `• Channel privat: hanya bisa dibaca kalau bot dijadikan admin${LISTENER ? ' atau akun listener join' : ''}.\n` +
+      'Bot cek ulang otomatis tiap 30 menit.';
 }
 function delChannel(c) {
-  db.channels = db.channels.filter((x) => x !== c); delete db.channelBrand[c];
-  targets.delete(c); missing = missing.filter((m) => m !== c);
+  db.channels = db.channels.filter((x) => x !== c); delete db.channelBrand[c]; delete db.lastSeen[c];
+  targets.delete(c); via.delete(c); webFail.delete(c); missing = missing.filter((m) => m !== c);
   save();
 }
 bot.command('addchannel', async (ctx) => {
-  const [, c, b] = ctx.message.text.split(/\s+/);
-  if (!c) return ctx.reply('Format: /addchannel @channel [brand]  (atau -100xxxxxxxx)');
+  const [, raw, b] = ctx.message.text.split(/\s+/);
+  if (!raw) return ctx.reply(`Format: /addchannel @channel [brand]\n${CH_FORMAT}`);
+  if (INVITE.test(raw)) return ctx.reply(PRIVATE_LINK);
+  const c = normChannel(raw);
+  if (!c) return ctx.reply(`Format channel salah. ${CH_FORMAT}`);
   if (b && !findBrand(b)) return ctx.reply(`Brand "${b}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
   ctx.reply(await addChannel(c, findBrand(b)));
 });
 bot.command('delchannel', (ctx) => {
-  delChannel((ctx.message.text.split(/\s+/)[1] || '').toLowerCase());
+  const raw = ctx.message.text.split(/\s+/)[1] || '';
+  delChannel(normChannel(raw) || raw.toLowerCase());
   ctx.reply('Dihapus.');
 });
 bot.command('channels', (ctx) => replyLong(ctx, db.channels.length
-  ? db.channels.map((c) => `${targets.has(c) ? '✅' : `⚠️ ${NOT_READ}`} ${c} → ${brandName(channelBrand(c))}`).join('\n')
+  ? db.channels.map(chanLine).join('\n')
   : 'Belum ada channel.'));
 
 bot.command('setreport', (ctx) => {
@@ -924,7 +1061,7 @@ bot.on('channel_post', async (ctx, next) => {
     db.reportChat = ctx.chat.id; save();
     return ctx.reply('📊 Channel laporan aktif.');
   }
-  if (!LISTENER) botChannelPost(ctx.channelPost);
+  botChannelPost(ctx.channelPost);
   return next();
 });
 
@@ -1062,7 +1199,7 @@ function statusText() {
   });
   return (
     `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\n` +
-    (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (bot harus admin di channel target)\n') +
+    (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (channel publik dibaca dari web t.me, tanpa admin)\n') +
     `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
     `Channel laporan: ${db.reportChat ? '✅' : '❌'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
     `Opt-in: ${Object.keys(db.optins).length} (menunggu verifikasi: ${Object.keys(db.pending).length})\n` +
@@ -1118,11 +1255,12 @@ function accountsPanel(checked = {}) {
   return { text: `👤 <b>Akun X</b> (1 akun per brand)\n\n${lines.join('\n\n')}`, rows };
 }
 function channelsPanel() {
-  const lines = db.channels.slice(0, 40).map((c) => `${targets.has(c) ? '✅' : '⚠️'} ${esc(c)} → ${esc(brandName(channelBrand(c)))}${targets.has(c) ? '' : ` (${NOT_READ})`}`);
+  const lines = db.channels.slice(0, 40).map((c) => esc(chanLine(c)));
   const rows = db.channels.slice(0, 20).map((c) => [btn(`🔁 ${c}: ${brandName(channelBrand(c))}`, `m:chb:${c}`), btn('🗑', `m:chdel:${c}`)]);
   rows.push([btn('➕ Tambah channel', 'm:ask:channel'), btn('🔄 Cek ulang', 'm:chref')], HOME);
   return {
-    text: `📢 <b>Channel target</b>\n${LISTENER ? 'Akun listener harus join channel.' : 'Bot harus jadi admin di channel.'} Tombol 🔁 = ganti brand.\n\n` +
+    text: '📢 <b>Channel target</b>\nChannel <b>publik</b> siapa pun: cukup tambah @username — dibaca dari web t.me, bot TIDAK perlu admin. ' +
+      `Channel privat: bot harus admin${LISTENER ? ' / akun listener join' : ''}. Tombol 🔁 = ganti brand.\n\n` +
       (lines.join('\n') || 'Belum ada channel.') + (db.channels.length > 40 ? `\n… +${db.channels.length - 40} lagi (/channels)` : ''),
     rows
   };
@@ -1195,11 +1333,13 @@ function autoPanel() {
   const a = db.auto;
   return {
     text: `🤖 <b>Otomatis</b>\n\nPantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'} (tiap ${a.watchIntervalMin} menit)\n` +
+      `Baca channel publik (web t.me): tiap ${a.webPollSec} detik\n` +
       `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00\n` +
       `Opt-in publik: ${a.publicOptin ? 'ON — project bisa /optin sendiri' : 'OFF — bot privat, hanya Anda'}`,
     rows: [
       [btn(`Pantau tweet opt-in: ${a.watchOptins ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.watchOptins')],
       optionRow('Tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], (v) => `${v}m`),
+      optionRow('Baca channel web', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v}d`),
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       optionRow('Ringkasan', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
@@ -1212,7 +1352,7 @@ const SETTABLE = {
   'limits.maxPerHour': limPanel, 'limits.maxPerDay': limPanel, 'auto.replyGapMin': limPanel,
   'filter.tweetsPerProject': limPanel, 'auto.maxRepliesPerProjectPerDay': limPanel,
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
-  'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel
+  'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
 };
 const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel };
 
@@ -1304,8 +1444,8 @@ const PROMPTS = {
     `👉 Kirim sekarang: <b>1. ${KEY_STEPS[0]}</b>\n\nPesan berisi kode langsung dihapus. /batal untuk batal.`,
   newbrand: () => '➕ <b>Brand baru</b>\n\nKirim nama brand: huruf kecil/angka tanpa spasi, contoh <code>nova</code>.\n' +
     'Setelah itu pilih cara menghubungkan akun X-nya. /batal untuk batal.',
-  channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau ID <code>-100…</code>\n' +
-    `${LISTENER ? 'Akun listener harus sudah join channel itu.' : 'Jadikan bot admin di channel itu dulu.'} /batal untuk batal.`,
+  channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau link <code>https://t.me/namachannel</code>\n' +
+    'Channel publik milik siapa pun bisa — bot tidak perlu jadi admin. /batal untuk batal.',
   tpl: (b, f) => `📝 Kirim teks template ${f === 'k' ? 'komentar' : 'tweet bot'} untuk <b>${esc(brandName(b))}</b>.\n` +
     'Variabel: <code>{name}</code> nama project, <code>{handle}</code> username X, <code>{channel}</code> nama channel.\n' +
     `Contoh: <code>${f === 'k' ? 'Love seeing {name} keep shipping 🚀' : '🚀 New project: {name}\nx.com/{handle}'}</code>\n/batal untuk batal.`,
@@ -1385,8 +1525,10 @@ async function handleInput(ctx, a) {
       return showPanel(ctx, connPanel(b), false);
     }
     case 'channel': {
-      const c = text.split(/\s+/)[0].toLowerCase();
-      if (!/^(@\w{4,32}|-100\d{5,})$/.test(c)) return again('Format salah. Contoh: @namachannel atau -1001234567890. Kirim lagi, atau /batal');
+      const raw = text.split(/\s+/)[0];
+      if (INVITE.test(raw)) return again(`${PRIVATE_LINK}\nKirim channel lain, atau /batal`);
+      const c = normChannel(raw);
+      if (!c) return again(`Format salah. ${CH_FORMAT}. Kirim lagi, atau /batal`);
       if (brands.length > 1) return chooseBrand(ctx, `Channel ${c} untuk brand mana?`, (b) => `m:chadd:${b}:${c}`);
       await ctx.reply(await addChannel(c, brands[0]));
       return showPanel(ctx, channelsPanel(), false);
@@ -1582,7 +1724,7 @@ if (LISTENER) {
     process.exit(1);
   }
 } else {
-  console.log('Mode bot saja: post dibaca dari channel tempat bot jadi admin');
+  console.log('Mode bot saja: channel publik dibaca dari web t.me, channel privat lewat bot admin');
   if (process.env.TG_API_ID || process.env.TG_API_HASH) console.log('(TG_API_* terisi tapi TG_SESSION kosong — jalankan npm run login untuk mode listener)');
 }
 await refreshChannels().catch((e) => console.error('refreshChannels:', e));
@@ -1595,13 +1737,14 @@ console.log('Bot Telegram aktif');
 await setupCommands();
 await report(
   `🟢 <b>Bot online</b>${LISTENER ? '' : ' · mode bot saja'}\n<b>Akun X</b>\n${esc(await accountsReport())}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
-  `${missing.length ? `\n⚠️ ${LISTENER ? 'Akun listener belum join' : 'Bot belum jadi admin di'}: ${esc(missing.join(', '))}` : ''}` +
+  `${missing.length ? `\n⚠️ Belum terbaca (privat / username salah): ${esc(missing.join(', '))}` : ''}` +
   `\nOpt-in: ${Object.keys(db.optins).length}\nAntrian dilanjutkan: ${db.queue.length}` +
   `${db.paused ? '\n⏸ Masih di-pause manual (/resume)' : ''}`
 );
 save();
 runQueue();
 setInterval(tick, TICK);
+webLoop();
 
 function stop(sig) {
   try { bot.stop(sig); } catch {}

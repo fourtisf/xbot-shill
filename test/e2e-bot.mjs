@@ -1,5 +1,6 @@
-// Test end-to-end mode bot saja: TG_API_ID / TG_API_HASH / TG_SESSION kosong,
-// bot membaca post dari channel tempat dia jadi admin. Jalankan: npm test
+// Test end-to-end mode bot saja: TG_API_ID / TG_API_HASH / TG_SESSION kosong.
+// Bot membaca post dari channel tempat dia jadi admin, dan channel publik orang lain dari halaman web t.me/s/…
+// (di-mock, lihat mocks/web.mjs). Jalankan: npm test
 import { register } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -42,7 +43,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
 
 // Hanya BOT_TOKEN + ADMIN_IDS; TG_* sengaja kosong (string kosong supaya .env di server tidak ikut terbaca)
 Object.assign(process.env, {
-  DB_FILE, BOT_TOKEN: '123:test', ADMIN_IDS: String(ADMIN), TG_API_ID: '', TG_API_HASH: '', TG_SESSION: '', TICK_MS: '100'
+  DB_FILE, BOT_TOKEN: '123:test', ADMIN_IDS: String(ADMIN), TG_API_ID: '', TG_API_HASH: '', TG_SESSION: '', TICK_MS: '100', WEB_POLL_MS: '100'
 });
 
 const sent = () => M.botCalls.filter((c) => c.method === 'sendMessage');
@@ -104,6 +105,7 @@ const buttonsOf = (p) => (p?.reply_markup?.inline_keyboard || []).flat();
 const dataOf = (p) => buttonsOf(p).map((b) => b.callback_data);
 const lastAnswer = () => M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1)?.payload;
 
+await import('./mocks/web.mjs');
 register('./mocks/hooks.mjs', import.meta.url);
 await import('../src/index.js');
 const { db } = await import('../src/db.js');
@@ -164,17 +166,95 @@ await test('post yang sama terkirim dua kali → diproses sekali', async () => {
   assert.equal(lookedUp('bbbproj'), 0);
 });
 
-await test('/addchannel: bot belum admin → diberi tahu, lalu terdeteksi otomatis setelah jadi admin', async () => {
-  assert.match(await dm(ADMIN, '/addchannel @beta dexvra'), /bot BELUM jadi admin di channel ini/);
-  assert.match(await dm(ADMIN, '/channels'), /⚠️ bot belum admin @beta/);
+await test('/addchannel: channel privat (tanpa web publik, bot bukan admin) → diberi tahu, terdeteksi otomatis setelah bot admin', async () => {
+  assert.match(await dm(ADMIN, '/addchannel @beta dexvra'), /BELUM bisa dibaca: channel privat atau username salah/);
+  assert.match(await dm(ADMIN, '/channels'), /⚠️ @beta → Dexvra \(belum terbaca\)/);
   M.botAdminIn.push(beta.id);
-  await until(() => reports().find((r) => r.includes('Bot sudah admin di @beta')), 'deteksi admin', 8000);
-  assert.match(await dm(ADMIN, '/channels'), /✅ @beta → Dexvra/);
+  await until(() => reports().find((r) => r.includes('Mulai dipantau: @beta (bot admin)')), 'deteksi admin', 8000);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @beta → Dexvra · bot admin/);
+});
+
+// ---------- Channel publik orang lain: dibaca dari web t.me/s/… (bot bukan admin) ----------
+const delta = { id: -1001004, type: 'channel', username: 'delta', title: 'Delta Signals' };
+const webPosts = [];
+const webPost = (id, html, extra = {}) => webPosts.push({ id, html, date: Date.now(), ...extra });
+for (const [n, i] of [['WebProj', 1], ['HiddenWebProj', 2], ['BtnWebProj', 3], ['SwitchProj', 4], ['AmpProj', 5]]) {
+  M.x.users[n.toLowerCase()] = user('w' + i, n, n.replace('Proj', ' Project'));
+}
+
+await test('channel publik orang lain: cukup @username, bot TIDAK perlu admin; post lama tidak diproses', async () => {
+  M.botChats['@delta'] = delta; // getChat berhasil untuk channel publik, tapi bot bukan anggota/admin
+  M.web.delta = { title: 'Delta Signals', posts: webPosts };
+  webPost(50, '<a href="https://x.com/OldWebProj" target="_blank" rel="noopener">x.com/OldWebProj</a>', { date: Date.now() - 60_000 });
+  const r = await dm(ADMIN, '/addchannel @delta');
+  assert.match(r, /@delta → Fourtis ditambahkan & dipantau lewat halaman web publik t\.me — bot tidak perlu jadi admin/);
+  assert.match(r, /Terbaca 1 post terakhir \(terbaru #50\)/);
+  assert.equal(db.lastSeen['@delta'], 50);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @delta → Fourtis · web publik/);
+  await sleep(400);
+  assert.equal(lookedUp('oldwebproj'), 0);
+});
+
+await test('web: link biasa, link tersembunyi, tombol link → diproses; kutipan balasan & info channel diabaikan', async () => {
+  webPost(51, 'New listing 🚀<br/><a href="https://x.com/WebProj" target="_blank" rel="noopener" onclick="return confirm(\'Open this link?\\n\\n\'+this.href);">x.com/WebProj</a>',
+    { replyTo: { id: 50, text: 'Kemarin: https://x.com/OldWebProj' } });
+  webPost(52, 'Cek <a href="https://twitter.com/HiddenWebProj?s=21&amp;t=abc" target="_blank">di sini</a> <i class="emoji"><b>🔥</b></i>',
+    { buttons: [['Twitter', 'https://x.com/BtnWebProj']] });
+  webPost(53, 'Tom &amp; Jerry x.com/AmpProj');
+  await until(() => lookedUp('webproj') && lookedUp('hiddenwebproj') && lookedUp('btnwebproj') && lookedUp('ampproj'), 'lookup post web');
+  assert.match(await reportMatching('tentang <b>@WebProj'), /Sumber: Delta Signals/);
+  await sleep(400); // beberapa putaran baca web lagi
+  assert.equal(lookedUp('webproj'), 1, 'post yang sama tidak diproses dua kali');
+  assert.equal(lookedUp('oldwebproj'), 0);
+  assert.equal(lookedUp('channelownx'), 0);
+  assert.equal(db.lastSeen['@delta'], 53);
+});
+
+await test('web: post terlalu lama dilewati; t.me error → laporan sekali, channel tetap dipantau, lalu pulih', async () => {
+  webPost(54, 'x.com/AncientProj', { date: Date.now() - 8 * 3600_000 });
+  await until(() => db.lastSeen['@delta'] === 54, 'lewati post lama');
+  assert.equal(lookedUp('ancientproj'), 0);
+  M.web.delta.down = true;
+  await reportMatching('Gagal membaca @delta dari web publik');
+  assert.match(await dm(ADMIN, '/channels'), /✅ @delta/);
+  M.web.delta.down = false;
+  await reportMatching('@delta terbaca lagi dari web publik');
+  assert.equal(reports().filter((r) => r.includes('Gagal membaca @delta')).length, 1);
+});
+
+await test('web → bot dijadikan admin: langsung pindah jalur bot, post tidak diproses dua kali', async () => {
+  M.botAdminIn.push(delta.id);
+  webPost(60, 'x.com/SwitchProj');
+  await channelPost(delta, 'x.com/SwitchProj', { id: 60 });
+  await until(() => lookedUp('switchproj'), 'lookup SwitchProj');
+  await sleep(400);
+  assert.equal(lookedUp('switchproj'), 1);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @delta → Fourtis · bot admin/);
+  await dm(ADMIN, '/delchannel @delta');
+  assert.equal(db.lastSeen['@delta'], undefined);
+});
+
+await test('link t.me diterima (t.me/x, t.me/s/x, link post); link undangan privat dijelaskan', async () => {
+  M.web.epsilon = { title: 'Epsilon', posts: [{ id: 7, html: 'hi', date: Date.now() }] };
+  assert.match(await dm(ADMIN, '/addchannel https://t.me/s/Epsilon/7 dexvra'), /@epsilon → Dexvra ditambahkan & dipantau lewat halaman web publik/);
+  assert.ok(db.channels.includes('@epsilon'));
+  assert.match(await dm(ADMIN, '/addchannel https://t.me/+AbCdEf123'), /link undangan channel PRIVAT/);
+  assert.match(await dm(ADMIN, '/addchannel https://t.me/c/1009999/15'), /-1001009999 → Fourtis ditambahkan, tapi BELUM bisa dibaca/);
+  await dm(ADMIN, '/delchannel https://t.me/c/1009999/15');
+  assert.ok(!db.channels.includes('-1001009999'));
+  assert.match(await dm(ADMIN, '/addchannel bukan-channel'), /Format channel salah/);
+  await tap(ADMIN, 'm:ask:channel');
+  assert.match(await dm(ADMIN, 't.me/joinchat/AbCdEf'), /link undangan channel PRIVAT/);
+  await dm(ADMIN, 't.me/Zeta_Calls');
+  assert.deepEqual(dataOf(lastPanel(ADMIN)).slice(0, 2), ['m:chadd:fourtis:@zeta_calls', 'm:chadd:dexvra:@zeta_calls']);
+  await dm(ADMIN, '/batal');
+  await dm(ADMIN, '/delchannel https://t.me/epsilon');
+  assert.ok(!db.channels.includes('@epsilon'));
 });
 
 await test('/status menampilkan mode bot saja', async () => {
   const s = await dm(ADMIN, '/status');
-  assert.match(s, /Mode: bot saja/);
+  assert.match(s, /Mode: bot saja \(channel publik dibaca dari web t\.me, tanpa admin\)/);
   assert.doesNotMatch(s, /Listener Telegram/);
   assert.equal(db.channels.length, 2);
 });

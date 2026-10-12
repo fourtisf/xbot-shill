@@ -85,7 +85,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
 
 Object.assign(process.env, {
   DB_FILE, BOT_TOKEN: '123:test', ADMIN_IDS: String(ADMIN),
-  TG_API_ID: '1', TG_API_HASH: 'hash', TG_SESSION: 'session', TICK_MS: '100'
+  TG_API_ID: '1', TG_API_HASH: 'hash', TG_SESSION: 'session', TICK_MS: '100', WEB_POLL_MS: '100'
 });
 
 // ---------- Helper ----------
@@ -150,6 +150,7 @@ async function channelPost(chatId, text) {
 const rateLimitError = (rateLimit) => Object.assign(new Error('Too Many Requests'), { code: 429, rateLimit, data: { title: 'Too Many Requests' } });
 
 // ---------- Jalankan bot ----------
+await import('./mocks/web.mjs'); // halaman web t.me palsu (tanpa jaringan)
 register('./mocks/hooks.mjs', import.meta.url);
 await import('../src/index.js');
 const { db } = await import('../src/db.js'); // instance yang sama dengan yang dipakai bot
@@ -172,13 +173,14 @@ await test('startup: laporan "Bot online", akun X, channel yang belum di-join', 
   const r = await reportMatching('Bot online');
   assert.match(r, /@fourtisbot/);
   assert.match(r, /Channel terpantau: 1\/2/);
-  assert.match(r, /belum join: @beta/);
+  assert.match(r, /Belum terbaca \(privat \/ username salah\): @beta/);
 });
 
 await test('restart: post channel yang terlewat saat bot mati diproses (catch-up)', async () => {
   await until(() => xcalls('tweet').some((c) => c[1].includes('Missed')), 'tweet MissedProj');
   await reportMatching('post channel yang terlewat');
-  assert.equal(db.lastSeen['1001'], 4);
+  assert.equal(db.lastSeen['@alpha'], 4); // kunci lama (id chat) dipindah ke nama channel
+  assert.equal(db.lastSeen['1001'], undefined);
 });
 
 await test('restart: antrian tersimpan dilanjutkan', async () => {
@@ -451,13 +453,21 @@ await test('listener putus → lapor, sambung ulang otomatis, post saat putus te
 await test('/addchannel memberi tahu kalau listener belum join, lalu terdeteksi otomatis setelah join', async () => {
   const delta = channel(1004, 'delta', 'Delta', false);
   M.channels.push(delta);
-  assert.match(await dm(ADMIN, '/addchannel @gamma'), /sudah dipantau/);
-  assert.match(await dm(ADMIN, '/addchannel @delta'), /BELUM join/);
+  assert.match(await dm(ADMIN, '/addchannel @gamma'), /sudah dipantau \(akun listener\)/);
+  assert.match(await dm(ADMIN, '/addchannel @delta'), /BELUM bisa dibaca[\s\S]*atau akun listener join/);
   delta.joined = true;
   beta.joined = true;
-  await until(() => reports().find((r) => r.includes('Listener sudah join') && r.includes('@delta')), 'deteksi join', 8000);
+  await until(() => reports().find((r) => r.includes('Mulai dipantau') && r.includes('@delta (akun listener)')), 'deteksi join', 8000);
   const chs = await dm(ADMIN, '/channels');
-  assert.doesNotMatch(chs, /belum join/);
+  assert.doesNotMatch(chs, /belum terbaca/);
+});
+
+await test('listener belum join channel publik → tetap terbaca lewat web t.me', async () => {
+  M.web.etacalls = { title: 'Eta Calls', posts: [{ id: 9, html: 'hello', date: Date.now() }] };
+  assert.match(await dm(ADMIN, '/addchannel @etacalls'), /dipantau lewat halaman web publik/);
+  M.web.etacalls.posts.push({ id: 10, html: '<a href="https://x.com/EtaProj">x.com/EtaProj</a>', date: Date.now() });
+  await until(() => xcalls('userByUsername').some((c) => c[1] === 'etaproj'), 'lookup EtaProj');
+  await dm(ADMIN, '/delchannel @etacalls');
 });
 
 await test('/setx key salah ditolak & key lama tetap dipakai', async () => {
@@ -767,7 +777,7 @@ await test('ringkasan harian + backup otomatis', async () => {
 await test('data.json tersimpan valid (antrian, opt-in, lastSeen)', async () => {
   const saved = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   assert.ok(saved.optins.pendproj);
-  assert.ok(saved.lastSeen['1001'] >= 4);
+  assert.ok(saved.lastSeen['@alpha'] >= 4);
   assert.ok(Array.isArray(saved.queue));
 });
 
