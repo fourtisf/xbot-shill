@@ -58,6 +58,16 @@ export class TwitterApi {
           failIfQueued('reply');
           return { data: { id: 'r' + ++M.x.n, text } };
         },
+        async like(userId, tweetId) {
+          call('like', userId, tweetId, creds.appKey);
+          failIfQueued('like');
+          return { data: { liked: true } };
+        },
+        async follow(userId, targetId) {
+          call('follow', userId, targetId, creds.appKey);
+          failIfQueued('follow');
+          return { data: { following: true } };
+        },
         async tweet(text) {
           call('tweet', text, Date.now(), creds.appKey);
           failIfQueued('tweet');

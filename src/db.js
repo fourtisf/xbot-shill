@@ -73,6 +73,7 @@ const defaults = {
   refills: {}, // handle -> [waktu pindah ke tweet lain] (maks. 3 per 24 jam)
   brandDown: {}, // brand -> { at, reason }: akun dihentikan rem darurat, jalan lagi dengan /resume brand
   tplLog: {}, // handle / #brand -> template terakhir dipakai (anti komentar kembar)
+  manual: {}, // tweet id -> data tombol aksi di laporan (💬 / ❤️ / 👤), dibersihkan setelah 3 hari
   lastSeen: {}, // channel (@nama / -100…) -> id post terakhir yang sudah dibaca
   watchSinceId: {}, // brand -> id tweet terbaru yang sudah dibaca
   stats: {}, // hitungan sejak ringkasan harian terakhir

@@ -3,11 +3,12 @@
 Bot Telegram yang memantau channel target. Setiap ada post dengan link X project:
 
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
-- **Project belum opt-in** → bot TIDAK berkomentar sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis) bot mencari tweet terbarunya
-  dan mengirim laporan berisi tombol **💬 Komentar <brand>**: X terbuka dengan komentar sudah terisi, Anda tinggal tekan Reply. Kalau OFF: hanya dilaporkan (tanpa kuota API X)
+- **Project belum opt-in** → bot TIDAK berkomentar sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis) bot mencari tweet terbarunya,
+  menyiapkan komentar per brand, dan laporan berisi tombol **💬 Kirim · ❤️ Like · 👤 Follow** per brand: 1 tekan di Telegram = 1 aksi dari akun brand
+  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, pakai tombol ✍️ Ubah di X. Kalau OFF: hanya dilaporkan (tanpa kuota API X)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
-- Setiap aksi dilaporkan ke **channel laporan**, lengkap dengan tombol Follow & Buka. Laporan komentar punya tombol **❤️ Like tweet** + **👤 Follow** (1 tap, buka app X sebagai akun brand)
+- Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 
 Semua pengaturan lewat bot Telegram — tidak ada website.
@@ -128,8 +129,8 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 
 Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
 
-- **Auto-like** — X melarang like otomatis. Gantinya: tombol ❤️ Like di tiap laporan komentar (1 tap)
-- **Auto-follow** — X melarang follow otomatis berulang. Gantinya: tombol 👤 Follow di tiap laporan (1 tap)
+- **Auto-like** — X melarang like otomatis. Gantinya: tombol ❤️ Like di laporan (1 tekan = 1 like, dipicu admin)
+- **Auto-follow** — X melarang follow otomatis berulang. Gantinya: tombol 👤 Follow di laporan (1 tekan = 1 follow, dipicu admin)
 - **Komentar / mention ke project yang belum opt-in** — reply otomatis hanya untuk project yang sudah setuju
 - **Beberapa akun untuk brand yang sama / akun bergantian / akun cadangan yang menggantikan akun yang gagal** — X menganggapnya menghindari limit atau sanksi lewat banyak akun; tiap akun harus punya brand & tujuan sendiri
 

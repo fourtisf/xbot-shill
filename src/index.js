@@ -163,10 +163,13 @@ const fmtGap = () => {
   const { minDelaySec: a, maxDelaySec: b } = db.limits;
   return a === b ? fmtSec(a) : `${fmtSec(a)}–${fmtSec(b)} (acak)`;
 };
-function canAct(b) {
-  if (!clients[b] || isDown(b) || limited(b) || Date.now() < (nextAt[b] || 0)) return false;
+function withinLimits(b) { // batas per jam/hari akun (Jeda & Batas), juga untuk aksi lewat tombol
   db.sentAt[b] = (db.sentAt[b] || []).filter((t) => t > Date.now() - DAY);
   return sentIn(b, 3600_000) < db.limits.maxPerHour && db.sentAt[b].length < db.limits.maxPerDay;
+}
+function canAct(b) {
+  if (!clients[b] || isDown(b) || limited(b) || Date.now() < (nextAt[b] || 0)) return false;
+  return withinLimits(b);
 }
 // Aksi berikutnya: akun yang sedang jeda/limit/dihentikan dan project yang masih dalam jeda dilewati
 // (yang lain tetap jalan). Yang terbaru duluan — tweet terbaru project, juga setelah antrian menumpuk karena limit
@@ -288,14 +291,13 @@ async function runJob(j) {
   db.replyLog[j.handle] = [...log, Date.now()];
   stat('replies', j.brand);
   const when = j.t0 ? `${((Date.now() - j.t0) / 1000).toFixed(1)}s setelah post channel` : 'dari pantauan tweet baru project opt-in';
-  // Like & follow sengaja lewat tombol (1 tap oleh manusia): X melarang like otomatis dan follow otomatis berulang
-  const likeBtn = Markup.button.url('❤️ Like tweet', `https://x.com/intent/like?tweet_id=${j.tweetId}`);
-  const openBtn = Markup.button.url('🔗 Buka', `https://x.com/i/status/${data.id}`);
+  // Like & follow tidak otomatis (X melarang like/follow otomatis): tombol di laporan, 1 tekan = 1 aksi
+  db.manual[j.tweetId] = { username: j.username, authorId: j.userId, at: Date.now(), brands: [j.brand], texts: {}, done: {}, replyId: data.id };
   await report(
     `✅ <b>Komentar terkirim</b> · ${esc(brandLabel(j.brand))}\nProject: <b>@${esc(j.username)}</b>\nSumber: ${esc(j.source || j.channel)}\n` +
     `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n<i>${when}</i>\n` +
-    `👇 Like &amp; Follow: 1 tap (buka app X sebagai ${brand.username ? `@${esc(brand.username)}` : `akun ${esc(brand.name)}`})`,
-    [[likeBtn, followBtn(j.username)], [openBtn]]
+    `👇 Like &amp; Follow: tekan tombol — dikirim dari ${esc(brandLabel(j.brand))}`,
+    actionRows(j.tweetId)
   );
   return true;
 }
@@ -319,7 +321,7 @@ function filterWhy(user) {
 
 // Project belum opt-in: bot TIDAK berkomentar sendiri (aturan X: komentar otomatis ke akun yang tidak minta = spam).
 // Kalau "Komentar 1-tap" ON, bot mencari tweet terbarunya dan menyiapkan teks komentar per brand; admin yang
-// menekan kirim di X (tombol membuka X dengan komentar sudah terisi). Dilaporkan sekali per cooldown
+// menekan tombol 💬 di laporan (1 tekan = 1 komentar dari akun brand). Dilaporkan sekali per cooldown
 async function notOptedIn(handle, channelName) {
   if (cooling(handle)) return;
   db.history[handle] = Date.now(); save();
@@ -339,19 +341,20 @@ async function notOptedIn(handle, channelName) {
     const tw = (tl.tweets || []).filter((t) => Date.now() - new Date(t.created_at) < maxAge && canReplyTo(t, rb)).sort(newestFirst)[0];
     if (!tw) return plain(` (tidak ada tweet baru ≤ ${db.filter.maxTweetAgeHours} jam)`);
     const vars = { name: user.name, handle: user.username, channel: channelName };
-    const send = brands.map((b) => {
+    const texts = {};
+    for (const b of brands) {
       const tpl = pickTemplate(db.brands[b].templates, 'manual:' + b, false);
       useTemplate('manual:' + b, tpl);
-      return Markup.button.url(`💬 Komentar ${brandName(b)}`, `https://x.com/intent/tweet?in_reply_to=${tw.id}&text=${encodeURIComponent(fill(tpl, vars))}`);
-    });
+      texts[b] = fill(tpl, vars);
+    }
+    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {} }; save();
     stat('manual');
     return report(
-      `💬 <b>@${esc(user.username)}</b> belum opt-in — komentar siap dikirim (1 tap)\nSumber: ${esc(channelName)}\n` +
+      `💬 <b>@${esc(user.username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
       `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
-      '<i>Tekan 💬 → X terbuka dengan komentar sudah terisi → tekan Reply. Pastikan app X sedang login sebagai akun brand itu.</i>',
-      [...chunk(send, 2),
-        [Markup.button.url('❤️ Like tweet', `https://x.com/intent/like?tweet_id=${tw.id}`), followBtn(user.username)],
-        [Markup.button.url('🔗 Buka tweet', `https://x.com/${user.username}/status/${tw.id}`)]]
+      brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
+      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.</i>',
+      actionRows(tw.id)
     );
   } catch (e) {
     console.error(e);
@@ -359,6 +362,63 @@ async function notOptedIn(handle, channelName) {
     return plain();
   }
 }
+// ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
+// Dipicu admin satu per satu (bukan otomatis — X melarang komentar/like/follow otomatis ke akun yang tidak minta).
+// 1 tekan = 1 aksi dari akun brand, ikut batas per jam/hari (Jeda & Batas). Tekan dua kali tidak dikirim dobel
+const ACT_LABEL = { c: ['💬 Kirim', '✅ Terkirim'], l: ['❤️ Like', '✅ Liked'], f: ['👤 Follow', '✅ Followed'] };
+function actionRows(tid) {
+  const m = db.manual[tid];
+  const multi = m.brands.length > 1;
+  const rows = m.brands.filter((b) => db.brands[b]).map((b) => ['c', 'l', 'f']
+    .filter((a) => (a !== 'c' || m.texts[b]) && (a !== 'f' || m.authorId))
+    .map((a) => btn(`${ACT_LABEL[a][m.done[`${a}:${b}`] ? 1 : 0]}${a === 'c' || multi ? ` · ${brandName(b)}` : ''}`, `mx:${a}:${b}:${tid}`)));
+  const first = m.brands.find((b) => m.texts[b]);
+  rows.push([
+    ...(first ? [Markup.button.url('✍️ Ubah di X', `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(m.texts[first])}`)] : []),
+    Markup.button.url('🔗 Tweet', `https://x.com/${m.username}/status/${tid}`),
+    ...(m.replyId ? [Markup.button.url('🔗 Komentar', `https://x.com/i/status/${m.replyId}`)] : [])
+  ]);
+  return rows;
+}
+const busy = new Set();
+const meId = async (b) => (db.brands[b].userId ||= (await clients[b].v2.me()).data.id);
+bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
+  // Laporan bisa dilihat subscriber channel: hanya ADMIN_IDS yang boleh menekan
+  if (!isAdmin(ctx)) return ctx.answerCbQuery('Khusus admin').catch(() => {});
+  const [, a, b, tid] = ctx.match;
+  const key = `${a}:${b}`;
+  const alert = (t) => ctx.answerCbQuery(t.slice(0, 190), { show_alert: true }).catch(() => {});
+  const m = db.manual[tid];
+  if (!m || !m.brands.includes(b)) return alert('Tombol ini sudah kedaluwarsa (lebih dari 3 hari).');
+  if (m.done[key]) return ctx.answerCbQuery('Sudah dilakukan ✅').catch(() => {});
+  if (!clients[b]) return alert(`Akun X ${brandName(b)} belum tersambung.`);
+  if (isDown(b) || limited(b)) return alert(`Akun ${brandName(b)} sedang jeda/dihentikan — coba lagi nanti.`);
+  if (!withinLimits(b)) return alert(`Batas akun ${brandName(b)} tercapai (${db.limits.maxPerHour}/jam, ${db.limits.maxPerDay}/hari). Ubah di /menu → Jeda & Batas.`);
+  if (busy.has(tid + key)) return ctx.answerCbQuery('Sedang diproses…').catch(() => {});
+  busy.add(tid + key);
+  try {
+    const x = clients[b].v2;
+    if (a === 'c') {
+      const { data } = await x.reply(m.texts[b], tid);
+      m.replyId = data.id;
+      stat('replies', b);
+    } else if (a === 'l') await x.like(await meId(b), tid);
+    else await x.follow(await meId(b), m.authorId);
+  } catch (e) {
+    console.error('aksi tombol:', e);
+    if (e?.code === 429) await xError(e, `${ACT_LABEL[a][0]} @${m.username}`, b);
+    return alert(`❌ ${a === 'c' && cannotReply(e)
+      ? 'X menolak komentar lewat API untuk tweet ini (project belum pernah me-mention / berinteraksi dengan akun brand). Pakai tombol ✍️ Ubah di X.'
+      : e?.data?.detail || e?.data?.title || e.message}`);
+  } finally {
+    busy.delete(tid + key);
+  }
+  (db.sentAt[b] ||= []).push(Date.now());
+  m.done[key] = Date.now(); save();
+  await ctx.answerCbQuery({ c: `✅ Komentar terkirim dari ${brandLabel(b)}`, l: '✅ Di-like', f: `✅ @${m.username} di-follow` }[a].slice(0, 190)).catch(() => {});
+  await ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
+});
+
 async function processProject(handle, channelName, t0, brand) {
   const x = clients[brand];
   if (!x) return report(`⚠️ Akun X ${esc(brandName(brand))} belum diatur. Pakai /menu → Akun X di DM bot.`);
@@ -758,6 +818,7 @@ async function dailyTasks() {
     if (l.length) db.replyLog[h] = l; else delete db.replyLog[h];
   }
   for (const [k, log] of Object.entries(db.tplLog)) if (log.at(-1).at < Date.now() - 7 * DAY) delete db.tplLog[k];
+  for (const [k, m] of Object.entries(db.manual)) if (m.at < Date.now() - 3 * DAY) delete db.manual[k];
   const file = backup();
   const s = db.stats;
   const perBrand = await Promise.all(Object.keys(db.brands).map(async (b) =>
@@ -988,7 +1049,7 @@ async function setAccount(ctx, brand, keys) {
   if (dup) return ctx.reply(`❌ @${me.username} sudah dipakai brand ${brandName(dup[0])}. Satu akun X hanya untuk satu brand.`);
   const isNew = !db.brands[brand];
   db.brands[brand] ||= newBrand(brand);
-  Object.assign(db.brands[brand], { x: creds, username: me.username });
+  Object.assign(db.brands[brand], { x: creds, username: me.username, userId: me.id });
   delete db.brandDown[brand]; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
@@ -1004,7 +1065,7 @@ bot.command('addaccount', (ctx) => {
 });
 bot.command('setx', (ctx) => setAccount(ctx, db.defaultBrand, ctx.message.text.split(/\s+/).slice(1)));
 function delAccount(b) {
-  Object.assign(db.brands[b], { x: null, username: null });
+  Object.assign(db.brands[b], { x: null, username: null, userId: null });
   initClients(); save();
   runQueue();
   return `Akun X ${brandName(b)} dihapus. Template & opt-in brand ini tetap disimpan; tambah akun lagi dengan /addaccount ${b} ...`;

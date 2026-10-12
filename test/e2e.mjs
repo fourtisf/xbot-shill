@@ -172,6 +172,7 @@ function optedIn(username, brand) {
   return tid;
 }
 const repliesTo = (tid) => xcalls('reply').filter((c) => c[2] === tid);
+const xErr = (code, detail) => Object.assign(new Error(detail), { code, data: { detail } });
 
 const results = [];
 async function test(name, fn) {
@@ -214,9 +215,10 @@ await test('project opt-in di channel → komentar di tweet terbarunya', async (
   const r = await reportMatching('Project: <b>@OptProj</b>');
   assert.match(r, /Komentar terkirim/);
   assert.match(r, /setelah post channel/);
-  assert.match(r, /Like &amp; Follow: 1 tap \(buka app X sebagai @fourtisbot\)/);
-  const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard.flat().map((b) => b.url);
-  assert.deepEqual(kb.slice(0, 2), ['https://x.com/intent/like?tweet_id=1700000000000000001', 'https://x.com/intent/follow?screen_name=OptProj']);
+  assert.match(r, /Like &amp; Follow: tekan tombol — dikirim dari Fourtis \(@fourtisbot\)/);
+  const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard.flat();
+  assert.deepEqual(kb.filter((b) => b.callback_data).map((b) => b.callback_data),
+    ['mx:l:fourtis:1700000000000000001', 'mx:f:fourtis:1700000000000000001']);
   assert.equal(xcalls('like').length + xcalls('follow').length, 0); // tidak pernah like/follow otomatis
 });
 
@@ -591,21 +593,45 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
     const tid = snow(Date.now(), 990);
     M.x.timelines.u98 = [{ id: tid, text: 'we just launched v1', created_at: new Date().toISOString() }];
     post(alpha, 'x.com/ManualProj');
-    const r = await reportMatching('<b>@ManualProj</b> belum opt-in — komentar siap dikirim (1 tap)');
-    assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"/);
-    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard.flat();
-    const send = kb.filter((b) => b.text.startsWith('💬'));
-    assert.deepEqual(send.map((b) => b.text), ['💬 Komentar Fourtis', '💬 Komentar Dexvra']);
-    for (const b of send) {
-      const u = new URL(b.url);
-      assert.equal(u.origin + u.pathname, 'https://x.com/intent/tweet');
-      assert.equal(u.searchParams.get('in_reply_to'), tid);
-      assert.match(u.searchParams.get('text'), /Manual Labs/);
-    }
-    assert.ok(kb.some((b) => b.url === `https://x.com/intent/like?tweet_id=${tid}`));
-    assert.ok(kb.some((b) => b.url === 'https://x.com/intent/follow?screen_name=ManualProj'));
+    const r = await reportMatching('<b>@ManualProj</b> belum opt-in — siap dikomentari');
+    assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"\nKomentar Fourtis: "[^"]*Manual Labs[^"]*"\nKomentar Dexvra: "[^"]*Manual Labs/);
+    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard;
+    assert.deepEqual(kb.slice(0, 2).map((row) => row.map((b) => b.callback_data)), [
+      [`mx:c:fourtis:${tid}`, `mx:l:fourtis:${tid}`, `mx:f:fourtis:${tid}`],
+      [`mx:c:dexvra:${tid}`, `mx:l:dexvra:${tid}`, `mx:f:dexvra:${tid}`]
+    ]);
+    assert.equal(new URL(kb[2][0].url).searchParams.get('in_reply_to'), tid); // ✍️ Ubah di X (cadangan)
     await tick(3);
-    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0); // bot TIDAK berkomentar sendiri
+    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0); // tanpa tombol ditekan: bot TIDAK berkomentar
+
+    // Bukan admin (subscriber channel laporan) tidak bisa menekan
+    await tap(555, `mx:c:fourtis:${tid}`);
+    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0);
+    // Admin tekan 💬 Fourtis → 1 komentar dari akun Fourtis; tekan lagi → tidak dobel
+    const text = db.manual[tid].texts.fourtis;
+    await tap(ADMIN, `mx:c:fourtis:${tid}`);
+    await tap(ADMIN, `mx:c:fourtis:${tid}`);
+    assert.deepEqual(xcalls('reply').filter((c) => c[2] === tid).map((c) => [c[1], c.at(-1)]), [[text, 'k']]);
+    const edit = M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
+    assert.equal(edit[0][0].text, '✅ Terkirim · Fourtis');
+    // ❤️ Like & 👤 Follow dari akun Dexvra
+    await tap(ADMIN, `mx:l:dexvra:${tid}`);
+    await tap(ADMIN, `mx:f:dexvra:${tid}`);
+    assert.deepEqual(xcalls('like').at(-1).slice(1), [db.brands.dexvra.userId || 'dk', tid, 'dk']);
+    assert.deepEqual(xcalls('follow').at(-1).slice(1, 3), [db.brands.dexvra.userId || 'dk', 'u98']);
+    // X menolak komentar API (project belum pernah berinteraksi) → penjelasan, tidak ditandai terkirim
+    M.x.failNext.reply = xErr(403, 'Reply to this conversation is not allowed because you have not been mentioned or otherwise engaged by the author of the post you are replying to.');
+    await tap(ADMIN, `mx:c:dexvra:${tid}`);
+    assert.match(M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text, /X menolak komentar lewat API/);
+    assert.ok(!db.manual[tid].done['c:dexvra']);
+    assert.ok(!db.brandDown.dexvra);
+    // Batas per jam akun tercapai → ditolak dengan penjelasan
+    const hour = db.limits.maxPerHour;
+    db.limits.maxPerHour = 0;
+    await tap(ADMIN, `mx:c:dexvra:${tid}`);
+    db.limits.maxPerHour = hour;
+    assert.match(M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text, /Batas akun Dexvra tercapai/);
+    assert.equal(xcalls('reply').filter((c) => c[2] === tid && c.at(-1) === 'dk').length, 1); // hanya percobaan yang ditolak X
   } finally {
     db.auto.manualAssist = false;
   }
@@ -700,7 +726,6 @@ await test('/delaccount → akun dihapus, template & brand tetap', async () => {
 });
 
 // ---------- Keandalan: tweet berikutnya, rem darurat, antrian terbaru duluan ----------
-const xErr = (code, detail) => Object.assign(new Error(detail), { code, data: { detail } });
 
 await test('tweet yang balasannya dibatasi → akun yang sama pindah ke tweet berikutnya', async () => {
   users.restrictproj = user('u30', 'RestrictProj', 'Restrict Project');
