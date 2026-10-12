@@ -138,10 +138,12 @@ Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
 ## Catatan
 
 - Data tersimpan di `data.json` (berisi key X — jangan dibagikan / di-commit, sudah ada di `.gitignore`).
-- **Batasan komentar lewat API X**: X bisa membatasi akun (atau app) sehingga komentar lewat API hanya boleh ke tweet yang
-  **me-mention akun brand** atau tweet milik akun itu sendiri. Ini aturan sisi X dan tidak bisa diakali dari bot. Bot otomatis
-  menyesuaikan: tweet yang me-mention akun brand tetap dikomentari otomatis; tweet lain disiapkan di laporan dengan tombol
-  **✍️ Balas di X · brand** (membuka X dengan komentar sudah terisi; pastikan sedang login sebagai akun brand itu, lalu tekan Reply).
+- **Batasan komentar lewat API X**: di semua paket di bawah Enterprise, X hanya mengizinkan komentar lewat API ke tweet yang
+  **me-mention akun brand** atau tweet milik akun itu sendiri. Ini aturan sisi X dan tidak bisa diakali dari bot. Karena itu
+  **Komentar lewat app X** ON bawaan (/menu → Otomatis, `/auto replyMentionOnly`): tweet yang me-mention akun brand tetap
+  dikomentari otomatis / 1 tekan; tweet lain langsung mendapat tombol **✍️ Balas di X · brand** (membuka X dengan komentar sudah
+  terisi; pastikan sedang login sebagai akun brand itu, lalu tekan Reply) — tanpa mencoba API, tanpa popup error.
+  Matikan hanya kalau paket API Anda Enterprise (bot lalu mencoba API dulu dan beralih sendiri kalau X menolak).
 - **Like / Follow ditolak X lewat API** (paket API / izin app): tombolnya otomatis jadi **❤️ Like di X** / **👤 Follow di X**
   (link ke X, tekan sendiri sebagai akun brand itu). Dicoba lagi lewat API setelah 7 hari / saat akun diganti.
 - X API berbayar: baca profil, timeline, dan pencarian (pantauan tweet opt-in) butuh minimal paket **Basic**. Pantauan memakai satu pencarian untuk banyak project sekaligus dan hanya membaca tweet baru (`since_id`); matikan dengan `/auto watchOptins false` kalau kuota baca menipis.

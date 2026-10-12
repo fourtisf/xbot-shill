@@ -83,7 +83,8 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
     { type: 'reply', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', userId: 'uq', tweetId: '1700000000000000077', tweetText: 'queued news', at: now }
   ],
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 }, // test melakukan banyak aksi
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true, manualAssist: false },
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true, manualAssist: false,
+    replyMentionOnly: false }, // test lama: komentar lewat API ke semua tweet (seperti paket Enterprise)
   lastDaily: new Date().toDateString()
 }));
 
@@ -821,6 +822,55 @@ await test('tweet "hanya akun yang di-mention" dilewati dari awal, kecuali akun 
   await until(() => xcalls('reply').filter((r) => r[1].includes('Mention Project')).length === 2, '2 komentar MentionProj');
   const ids = xcalls('reply').filter((r) => r[1].includes('Mention Project')).map((r) => r[2]);
   assert.deepEqual(ids, [b.id, c.id]);
+});
+
+await test('komentar lewat app X (bawaan ON): tweet tanpa mention langsung ✍️ Balas di X, API tidak dicoba; tweet yang me-mention tetap lewat API', async () => {
+  db.auto.replyMentionOnly = true;
+  db.auto.manualAssist = true;
+  try {
+    // Project belum opt-in: tombol komentar langsung link ke X untuk kedua brand, tanpa percobaan API
+    users.appproj = user('u95', 'AppProj', 'App Labs');
+    const tid = snow(Date.now(), 993);
+    M.x.timelines.u95 = [{ id: tid, text: 'mainnet is live', created_at: new Date().toISOString() }];
+    const replies = xcalls('reply').length;
+    post(alpha, 'x.com/AppProj');
+    const r = await reportMatching('<b>@AppProj</b> belum opt-in — siap dikomentari');
+    const kb = keyboardOf(r);
+    assert.deepEqual(kb.slice(0, 2).map((row) => row[0].text), ['✍️ Balas di X · Fourtis', '✍️ Balas di X · Dexvra']);
+    assert.equal(new URL(kb[1][0].url).searchParams.get('text'), db.manual[tid].texts.dexvra);
+    assert.deepEqual(kb.slice(0, 2).map((row) => row.slice(1).map((b) => b.callback_data)), [
+      [`mx:l:fourtis:${tid}`, `mx:f:fourtis:${tid}`], [`mx:l:dexvra:${tid}`, `mx:f:dexvra:${tid}`]
+    ]); // Like & Follow tetap 1 tekan dari Telegram
+    assert.match(r, /Tombol "… di X" = buka X/);
+    await tap(ADMIN, `mx:c:fourtis:${tid}`); // tombol 💬 dari laporan lama
+    assert.match(lastAnswer(), /me-mention akun Fourtis/);
+    assert.equal(xcalls('reply').length, replies);
+
+    // Tweet yang me-mention Fourtis: Fourtis tetap 💬 Kirim (API), Dexvra lewat app X
+    users.tagproj = user('u94', 'TagProj', 'Tag Labs');
+    const tid2 = snow(Date.now(), 994);
+    M.x.timelines.u94 = [{ id: tid2, text: 'thanks @FourtisBot', created_at: new Date().toISOString() }];
+    post(alpha, 'x.com/TagProj');
+    const kb2 = keyboardOf(await reportMatching('<b>@TagProj</b> belum opt-in — siap dikomentari'));
+    assert.equal(kb2[0][0].callback_data, `mx:c:fourtis:${tid2}`);
+    assert.equal(kb2[1][0].text, '✍️ Balas di X · Dexvra');
+    await tap(ADMIN, `mx:c:fourtis:${tid2}`);
+    assert.equal(repliesTo(tid2).length, 1);
+
+    // Project opt-in: tweet tanpa mention → komentar disiapkan tanpa API; tweet yang me-mention → otomatis lewat API
+    const t3 = optedIn('AppOptA');
+    post(alpha, 'x.com/AppOptA');
+    await reportMatching('<b>@AppOptA</b> (opt-in)');
+    assert.equal(repliesTo(t3).length, 0);
+    const t4 = optedIn('AppOptB');
+    M.x.timelines[users.appoptb.id][0].text = 'gm @FourtisBot';
+    post(alpha, 'x.com/AppOptB');
+    await until(() => repliesTo(t4).length, 'komentar API ke tweet yang me-mention');
+    assert.ok(!db.brands.fourtis.mentionOnly && !db.brandDown.fourtis);
+  } finally {
+    db.auto.replyMentionOnly = false;
+    db.auto.manualAssist = false;
+  }
 });
 
 await test('project opt-in: X hanya mengizinkan tweet yang me-mention → komentar disiapkan (✍️ Balas di X), rem darurat tidak terpicu', async () => {

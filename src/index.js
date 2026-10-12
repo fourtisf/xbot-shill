@@ -240,12 +240,13 @@ const freshTweet = (t) => Date.now() - new Date(t.created_at) < db.filter.maxTwe
 const canReplyTo = (t, brand) => t.reply_settings !== 'mentionedUsers' ||
   !!db.brands[brand]?.username && t.text.toLowerCase().includes('@' + db.brands[brand].username.toLowerCase());
 
-// X API: akun ini hanya boleh berkomentar ke tweet yang me-mention akun brand (atau tweet sendiri).
-// Ditolak sekali → brand ditandai (dicoba lagi lewat API setelah 7 hari); tweet lain cukup disiapkan, admin yang
-// kirim dari app X lewat tombol ✍️ Balas di X. Bukan masalah akun: tidak dihitung ke rem darurat
-const mentionOnlyErr = (e) => e?.code === 403 && /only reply to or quote posts where you are mentioned/i.test(errText(e));
+// X API (di bawah paket Enterprise): komentar hanya boleh ke tweet yang me-mention akun brand (atau tweet sendiri).
+// replyMentionOnly ON (bawaan): tweet lain langsung disiapkan, admin kirim dari app X lewat tombol ✍️ Balas di X.
+// OFF (Enterprise): dicoba lewat API; ditolak sekali → brand ditandai (dicoba lagi setelah 7 hari).
+// Bukan masalah akun: tidak dihitung ke rem darurat
+const mentionOnlyErr = (e) => /only reply to or quote posts where you are mentioned/i.test(errText(e));
 const mentionsOf = (text = '') => (text.match(/@\w{1,15}/g) || []).map((m) => m.slice(1).toLowerCase());
-const mentionOnly = (b) => Date.now() - (db.brands[b]?.mentionOnly || 0) < 7 * DAY;
+const mentionOnly = (b) => db.auto.replyMentionOnly || Date.now() - (db.brands[b]?.mentionOnly || 0) < 7 * DAY;
 const apiCanReply = (b, mentions = []) => !mentionOnly(b) || mentions.includes(db.brands[b].username?.toLowerCase());
 const replyIntent = (tid, text) => `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(text)}`;
 async function markMentionOnly(b) {
@@ -1529,6 +1530,9 @@ function autoPanel() {
       `📢 <b>Baca channel publik: tiap ${a.webPollSec} detik</b>\nSeberapa sering bot membuka halaman web channel target.\n\n` +
       `💬 <b>Komentar 1-tap (project belum opt-in): ${a.manualAssist ? 'ON' : 'OFF'}</b>\n` +
       'Bot mencari tweet terbaru project &amp; menyiapkan komentarnya; Anda tinggal tekan 💬 di laporan lalu Reply di X. Memakai kuota baca API X.\n\n' +
+      `✍️ <b>Komentar lewat app X (tweet tanpa mention brand): ${a.replyMentionOnly ? 'ON' : 'OFF'}</b>\n` +
+      'X API (di bawah paket Enterprise) menolak komentar ke tweet yang tidak me-mention akun brand. ON = tombolnya langsung ✍️ Balas di X ' +
+      '(komentar sudah terisi, tekan Reply di X), tanpa popup error. OFF hanya untuk paket Enterprise.\n\n' +
       `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
       `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
       `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +
@@ -1538,6 +1542,7 @@ function autoPanel() {
       ...optionRows('⏱ Cek tweet baru opt-in tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], mnt),
       ...optionRows('📢 Baca channel publik tiap', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v} dtk`),
       [btn(`Komentar 1-tap: ${a.manualAssist ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.manualAssist')],
+      [btn(`Komentar lewat app X: ${a.replyMentionOnly ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.replyMentionOnly')],
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       ...optionRows('📊 Ringkasan harian jam', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
@@ -1552,7 +1557,10 @@ const SETTABLE = {
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
   'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
 };
-const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel };
+const TOGGLE = {
+  'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel,
+  'auto.replyMentionOnly': autoPanel
+};
 
 // Nama di console.x.com (nama lama di developer portal dalam kurung)
 const KEY_STEPS = ['Consumer Key (API Key)', 'Secret Key (API Key Secret)', 'Access Token', 'Access Token Secret'];

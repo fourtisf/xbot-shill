@@ -59,6 +59,9 @@ const defaults = {
     pendingExpireDays: 3,
     webPollSec: 30, // baca halaman web channel publik (t.me/s/…) tiap N detik
     manualAssist: true, // project belum opt-in: siapkan komentar 1-tap (admin yang menekan kirim di X)
+    // X API di bawah paket Enterprise hanya mengizinkan komentar ke tweet yang me-mention akun brand: tweet lain
+    // langsung lewat tombol ✍️ Balas di X (tanpa mencoba API). OFF hanya untuk paket Enterprise
+    replyMentionOnly: true,
     catchUpMin: 5, // ambil post channel yang terlewat (bot mati / koneksi putus)
     catchUpMaxAgeHours: 6,
     dailyReportHour: 9, // jam ringkasan harian + backup (zona waktu TZ di .env)
