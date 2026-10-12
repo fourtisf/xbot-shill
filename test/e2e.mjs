@@ -196,6 +196,10 @@ await test('project opt-in di channel → komentar di tweet terbarunya', async (
   assert.equal(c.at(-1), 'k'); // akun Fourtis
   const r = await reportMatching('Komentar terkirim');
   assert.match(r, /setelah post channel/);
+  assert.match(r, /Like &amp; Follow: 1 tap \(buka app X sebagai @fourtisbot\)/);
+  const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard.flat().map((b) => b.url);
+  assert.deepEqual(kb.slice(0, 2), ['https://x.com/intent/like?tweet_id=1700000000000000001', 'https://x.com/intent/follow?screen_name=OptProj']);
+  assert.equal(xcalls('like').length + xcalls('follow').length, 0); // tidak pernah like/follow otomatis
 });
 
 await test('project belum opt-in → akun bot tweet sendiri (bukan reply)', async () => {

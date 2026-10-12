@@ -5,7 +5,7 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
 - **Project belum opt-in** → hanya dilaporkan ke channel laporan (dengan tombol Follow). Tidak ada aksi di X dan kuota API X tidak terpakai.
   *Tweet bot* (akun brand membuat tweet sendiri tentang project) **OFF bawaan**; nyalakan per brand di /menu → Otomatis atau `/tweet on brand`
-- Setiap aksi dilaporkan ke **channel laporan**, lengkap dengan tombol Follow & Buka
+- Setiap aksi dilaporkan ke **channel laporan**, lengkap dengan tombol Follow & Buka. Laporan komentar punya tombol **❤️ Like tweet** + **👤 Follow** (1 tap, buka app X sebagai akun brand)
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 
 Semua pengaturan lewat bot Telegram — tidak ada website.
@@ -130,8 +130,8 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 
 Aturan otomasi X melarang hal-hal ini dan bisa membuat akun bot di-suspend:
 
-- **Auto-like** — X melarang like otomatis
-- **Auto-follow massal** — tombol Follow di laporan sengaja manual
+- **Auto-like** — X melarang like otomatis. Gantinya: tombol ❤️ Like di tiap laporan komentar (1 tap)
+- **Auto-follow** — X melarang follow otomatis berulang. Gantinya: tombol 👤 Follow di tiap laporan (1 tap)
 - **Komentar / mention ke project yang belum opt-in** — reply otomatis hanya untuk project yang sudah setuju
 - **Beberapa akun untuk brand yang sama / akun bergantian / akun cadangan yang menggantikan akun yang gagal** — X menganggapnya menghindari limit atau sanksi lewat banyak akun; tiap akun harus punya brand & tujuan sendiri
 

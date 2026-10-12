@@ -307,10 +307,13 @@ async function runJob(j) {
     db.replyLog[j.handle] = [...log, Date.now()];
     stat('replies', j.brand);
     const when = j.t0 ? `${((Date.now() - j.t0) / 1000).toFixed(1)}s setelah post channel` : 'dari pantauan tweet baru project opt-in';
+    // Like & follow sengaja lewat tombol (1 tap oleh manusia): X melarang like otomatis dan follow otomatis berulang
+    const likeBtn = Markup.button.url('❤️ Like tweet', `https://x.com/intent/like?tweet_id=${j.tweetId}`);
     await report(
       `✅ <b>Komentar terkirim</b> · ${esc(brandLabel(j.brand))}\nProject: <b>@${esc(j.username)}</b>\nSumber: ${esc(j.source || j.channel)}\n` +
-      `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n<i>${when}</i>`,
-      [[followBtn, openBtn(data.id)]]
+      `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n<i>${when}</i>\n` +
+      `👇 Like &amp; Follow: 1 tap (buka app X sebagai ${db.brands[j.brand].username ? `@${esc(db.brands[j.brand].username)}` : `akun ${esc(brand.name)}`})`,
+      [[likeBtn, followBtn], [openBtn(data.id)]]
     );
     return true;
   }
