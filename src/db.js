@@ -10,7 +10,7 @@ export function newBrand(key, name = key[0].toUpperCase() + key.slice(1)) {
     name,
     x: null, // { appKey, appSecret, accessToken, accessSecret }
     username: null,
-    ownTweetEnabled: true,
+    ownTweetEnabled: false, // tweet bot (project belum opt-in): OFF kecuali dinyalakan pemilik
     templates: [
       `Big things happening at {name} 🔥 watching this one closely`,
       `Love seeing {name} keep shipping 🚀`,
@@ -132,6 +132,11 @@ function load() {
   if (typeof d.pausedUntil !== 'object' || !d.pausedUntil) d.pausedUntil = d.pausedUntil ? { [d.defaultBrand]: d.pausedUntil } : {};
   if (typeof d.watchSinceId !== 'object' || !d.watchSinceId) d.watchSinceId = d.watchSinceId ? { [d.defaultBrand]: d.watchSinceId } : {};
   for (const j of d.queue) j.brand ||= d.defaultBrand;
+  // Tweet bot dulu ON bawaan; sekarang OFF. Data lama dimatikan sekali — nyalakan lagi lewat tombol kalau mau
+  if (!d.tweetBotDefaultOff) {
+    for (const v of Object.values(d.brands)) v.ownTweetEnabled = false;
+    d.tweetBotDefaultOff = true;
+  }
   return d;
 }
 

@@ -338,6 +338,12 @@ async function processProject(handle, channelName, t0, brand) {
   const f = db.filter;
   const last = db.history[handle]; // cooldown berlaku untuk semua brand: satu project tidak di-tweet dua akun
   if (inFlight.has(handle) || (last && Date.now() - last < f.cooldownDays * DAY)) return;
+  if (!db.optins[handle] && !db.brands[brand].ownTweetEnabled) {
+    // Tweet bot OFF: tidak ada yang dilakukan di X untuk project ini, jadi tidak perlu memakai kuota API X
+    db.history[handle] = Date.now(); save();
+    return report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — dilewati (tweet bot ${esc(brandName(brand))} OFF)\nSumber: ${esc(channelName)}`,
+      [[Markup.button.url('👤 Follow', `https://x.com/intent/follow?screen_name=${handle}`)]]);
+  }
   inFlight.add(handle);
   try {
     const { data: user } = await x.v2.userByUsername(handle, {
@@ -378,9 +384,7 @@ async function processProject(handle, channelName, t0, brand) {
       }
     } else {
       db.history[handle] = Date.now(); save();
-      if (db.brands[brand].ownTweetEnabled) enqueue({ ...base, type: 'tweet', at: Date.now() });
-      else await report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — dilewati (tweet ${esc(brandName(brand))} OFF)\nSumber: ${esc(channelName)}`,
-        [[Markup.button.url('👤 Follow', `https://x.com/intent/follow?screen_name=${user.username}`)]]);
+      enqueue({ ...base, type: 'tweet', at: Date.now() }); // tweet bot ON (OFF sudah dilewati di atas)
     }
   } finally {
     inFlight.delete(handle);
@@ -1283,6 +1287,8 @@ function channelsPanel() {
 function tplBrandPanel() {
   return { text: '📝 <b>Template</b> — pilih brand:', rows: [Object.entries(db.brands).map(([b, v]) => btn(v.name, `m:tpl:${b}`)), HOME] };
 }
+const TWEET_BOT_INFO = '<i>Kalau ON: project yang BELUM opt-in muncul di channel → akun X brand membuat tweet sendiri tentang project itu. ' +
+  'Kalau OFF: tidak ada tweet, project hanya dilaporkan ke channel laporan.</i>';
 function tplPanel(b) {
   const v = db.brands[b];
   // Maks. 15 per jenis supaya muat batas Telegram (4096 karakter, 100 tombol); sisanya lewat /tpls
@@ -1291,11 +1297,11 @@ function tplPanel(b) {
   const delRows = (l, f) => chunk(l.slice(0, 15).map((_, i) => btn(`🗑 ${f.toUpperCase()}${i + 1}`, `m:tdel:${b}:${f}:${i + 1}`)), 5);
   return {
     text: `📝 <b>Template ${esc(v.name)}</b>\nVariabel: {name} {handle} {channel}\n\n<b>K = Komentar</b> (project opt-in):\n${list(v.templates)}\n\n` +
-      `<b>T = Tweet bot</b> (project belum opt-in, ${v.ownTweetEnabled ? 'ON' : 'OFF'}):\n${list(v.tweetTemplates)}`,
+      `<b>T = Tweet bot: ${v.ownTweetEnabled ? 'ON' : 'OFF'}</b>\n${TWEET_BOT_INFO}\n${list(v.tweetTemplates)}`,
     rows: [
+      [btn(`Tweet bot: ${v.ownTweetEnabled ? '✅ ON — tekan untuk matikan' : '❌ OFF — tekan untuk nyalakan'}`, `m:twtog:${b}`)],
       [btn('➕ Komentar', `m:ask:tpl:${b}:k`), btn('➕ Tweet', `m:ask:tpl:${b}:t`)],
       ...delRows(v.templates, 'k'), ...delRows(v.tweetTemplates, 't'),
-      [btn(`Tweet bot: ${v.ownTweetEnabled ? '✅ ON' : '❌ OFF'}`, `m:twtog:${b}`)],
       [btn('⬅️ Pilih brand', 'm:tplb'), ...HOME]
     ]
   };
@@ -1349,6 +1355,7 @@ function autoPanel() {
   return {
     text: `🤖 <b>Otomatis</b>\n\nPantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'} (tiap ${a.watchIntervalMin} menit)\n` +
       `Baca channel publik (web t.me): tiap ${a.webPollSec} detik\n` +
+      `Tweet bot (project belum opt-in): ${Object.values(db.brands).map((v) => `${esc(v.name)} ${v.ownTweetEnabled ? 'ON' : 'OFF'}`).join(' · ')}\n` +
       `Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}\nRingkasan harian + backup: jam ${a.dailyReportHour}.00\n` +
       `Opt-in publik: ${a.publicOptin ? 'ON — project bisa /optin sendiri' : 'OFF — bot privat, hanya Anda'}`,
     rows: [
@@ -1357,6 +1364,7 @@ function autoPanel() {
       optionRow('Baca channel web', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v}d`),
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
+      ...chunk(Object.entries(db.brands).map(([b, v]) => btn(`Tweet bot ${v.name}: ${v.ownTweetEnabled ? '✅ ON' : '❌ OFF'}`, `m:twtog:${b}:auto`)), 2),
       optionRow('Ringkasan', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
       HOME
     ]
@@ -1639,9 +1647,11 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
       break;
     }
     case 'twtog': {
-      const b = findBrand(arg);
+      const b = findBrand(args[0]);
       if (!b) break;
-      db.brands[b].ownTweetEnabled = !db.brands[b].ownTweetEnabled; save(); panel = tplPanel(b);
+      db.brands[b].ownTweetEnabled = !db.brands[b].ownTweetEnabled; save();
+      toast = `Tweet bot ${brandName(b)}: ${db.brands[b].ownTweetEnabled ? 'ON' : 'OFF'}`;
+      panel = args[1] === 'auto' ? autoPanel() : tplPanel(b);
       break;
     }
     case 'opt': panel = optPanel(); break;

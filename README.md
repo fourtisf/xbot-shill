@@ -3,7 +3,8 @@
 Bot Telegram yang memantau channel target. Setiap ada post dengan link X project:
 
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
-- **Project belum opt-in** → akun X bot posting tweet sendiri tentang project (bisa dimatikan dengan `/tweet off`)
+- **Project belum opt-in** → hanya dilaporkan ke channel laporan (dengan tombol Follow). Tidak ada aksi di X dan kuota API X tidak terpakai.
+  *Tweet bot* (akun brand membuat tweet sendiri tentang project) **OFF bawaan**; nyalakan per brand di /menu → Otomatis atau `/tweet on brand`
 - Setiap aksi dilaporkan ke **channel laporan**, lengkap dengan tombol Follow & Buka
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 

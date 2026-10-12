@@ -36,6 +36,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   x: { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' },
   channels: ['@alpha'],
   reportChat: REPORT,
+  ownTweetEnabled: true, tweetBotDefaultOff: true, // test ini menguji tweet bot, jadi dinyalakan
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 },
   auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0 },
   lastDaily: new Date().toDateString()
@@ -477,9 +478,19 @@ await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat to
   p = await tap(ADMIN, `m:tdel:dexvra:t:${list.length}`);
   assert.ok(!db.brands.dexvra.tweetTemplates.includes('🚀 Baru: {name}\nx.com/{handle}'));
   await tap(ADMIN, 'm:twtog:dexvra');
-  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
-  await tap(ADMIN, 'm:twtog:dexvra');
   assert.equal(db.brands.dexvra.ownTweetEnabled, true);
+  assert.match(lastAnswer().text, /Tweet bot Dexvra: ON/);
+  let q = await tap(ADMIN, 'm:twtog:dexvra');
+  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
+  assert.equal(dataOf(q)[0], 'm:twtog:dexvra'); // tombol ON/OFF paling atas
+  assert.match(q.text, /T = Tweet bot: OFF<\/b>\n<i>Kalau ON:/);
+  // dari panel Otomatis juga bisa, panel Otomatis tetap tampil
+  q = await tap(ADMIN, 'm:twtog:dexvra:auto');
+  assert.equal(db.brands.dexvra.ownTweetEnabled, true);
+  assert.match(q.text, /Tweet bot \(project belum opt-in\): Fourtis ON · Dexvra ON/);
+  assert.ok(dataOf(q).includes('m:twtog:fourtis:auto'));
+  await tap(ADMIN, 'm:twtog:dexvra:auto');
+  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
 });
 
 await test('Opt-in manual & hapus lewat tombol', async () => {

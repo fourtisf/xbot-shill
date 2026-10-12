@@ -75,6 +75,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   // Format data versi lama (satu akun, template global): ikut menguji migrasi ke brand
   templates: ['Love seeing {name} 🚀', '{name} keeps shipping 🔥', 'Big week for {name} 👀'],
   ownTweetTemplate: '🚀 New project spotted: {name}\nVia {channel}\nx.com/{handle}',
+  ownTweetEnabled: true, tweetBotDefaultOff: true, // test ini menguji tweet bot, jadi dinyalakan
   optins: { optproj: { at: now, via: 'admin' } },
   lastSeen: { 1001: 3 },
   queue: [{ type: 'tweet', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', at: now }],
@@ -154,6 +155,7 @@ await import('./mocks/web.mjs'); // halaman web t.me palsu (tanpa jaringan)
 register('./mocks/hooks.mjs', import.meta.url);
 await import('../src/index.js');
 const { db } = await import('../src/db.js'); // instance yang sama dengan yang dipakai bot
+db.brands.dexvra.ownTweetEnabled = true; // test multi-brand menguji tweet bot Dexvra juga
 
 const results = [];
 async function test(name, fn) {
@@ -627,6 +629,38 @@ await test('rate limit akun Dexvra tidak menghentikan akun Fourtis', async () =>
   assert.match(await dm(ADMIN, '/status'), /Dexvra \(@dexvra_x\): ⏸ rate limit/);
   db.pausedUntil.dexvra = Date.now() + 200;
   await until(() => xcalls('tweet').filter((c) => c[1].includes('Dex Rate')).length === 2, 'Dexvra lanjut sendiri');
+});
+
+await test('tweet bot OFF: project belum opt-in hanya dilaporkan, tanpa memakai kuota API X', async () => {
+  users.offproj = user('u97', 'OffProj', 'Off Project');
+  await dm(ADMIN, '/tweet off fourtis');
+  try {
+    post(alpha, 'x.com/OffProj');
+    assert.match(await reportMatching('@offproj</b> belum opt-in — dilewati (tweet bot Fourtis OFF)'), /Sumber: Alpha Calls/);
+    await tick(3);
+    assert.equal(xcalls('userByUsername').filter((c) => c[1] === 'offproj').length, 0);
+    assert.equal(xcalls('tweet').filter((c) => c[1].includes('Off Project')).length, 0);
+  } finally {
+    await dm(ADMIN, '/tweet on fourtis');
+  }
+});
+
+await test('data lama: tweet bot dimatikan sekali saat update, setelah itu pilihan pemilik dihormati', async () => {
+  const load = (data) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xagent-tweetoff-'));
+    fs.writeFileSync(path.join(dir, 'data.json'), JSON.stringify(data));
+    return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+      `const { db } = await import(${JSON.stringify(new URL('../src/db.js', import.meta.url).href)}); console.log(JSON.stringify(db))`],
+    { env: { ...process.env, DB_FILE: path.join(dir, 'data.json') }, stdio: ['ignore', 'pipe', 'ignore'] }).toString());
+  };
+  const on = { name: 'Fourtis', ownTweetEnabled: true, templates: ['a'], tweetTemplates: ['b'] };
+  const old = load({ brands: { fourtis: on, dexvra: { ...on, name: 'Dexvra' } } });
+  assert.equal(old.brands.fourtis.ownTweetEnabled, false);
+  assert.equal(old.brands.dexvra.ownTweetEnabled, false);
+  assert.equal(old.tweetBotDefaultOff, true);
+  const chosen = load({ brands: { fourtis: on }, tweetBotDefaultOff: true }); // dinyalakan lagi oleh pemilik
+  assert.equal(chosen.brands.fourtis.ownTweetEnabled, true);
+  assert.equal(load({}).brands.fourtis.ownTweetEnabled, false); // instalasi baru: OFF
 });
 
 await test('/tweet off dexvra hanya mematikan tweet Dexvra', async () => {
