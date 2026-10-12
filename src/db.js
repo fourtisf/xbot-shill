@@ -59,9 +59,6 @@ const defaults = {
     pendingExpireDays: 3,
     webPollSec: 30, // baca halaman web channel publik (t.me/s/…) tiap N detik
     manualAssist: true, // project belum opt-in: siapkan komentar 1-tap (admin yang menekan kirim di X)
-    // X API di bawah paket Enterprise hanya mengizinkan komentar ke tweet yang me-mention akun brand: tweet lain
-    // langsung lewat tombol ✍️ Balas di X (tanpa mencoba API). OFF hanya untuk paket Enterprise
-    replyMentionOnly: true,
     catchUpMin: 5, // ambil post channel yang terlewat (bot mati / koneksi putus)
     catchUpMaxAgeHours: 6,
     dailyReportHour: 9, // jam ringkasan harian + backup (zona waktu TZ di .env)
@@ -137,6 +134,9 @@ function load() {
   for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; }
   for (const k of Object.keys(d.tplLog || {})) if (k.startsWith('#')) delete d.tplLog[k];
   for (const k of ['channelBrand', 'tweetBotDefaultOff']) delete d[k];
+  // Batasan komentar X dulu dicatat per akun; sekarang per tweet (db.manual[tid].noApi)
+  delete d.auto.replyMentionOnly;
+  for (const v of Object.values(d.brands)) delete v.mentionOnly;
   return d;
 }
 

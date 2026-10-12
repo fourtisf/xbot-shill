@@ -240,21 +240,11 @@ const freshTweet = (t) => Date.now() - new Date(t.created_at) < db.filter.maxTwe
 const canReplyTo = (t, brand) => t.reply_settings !== 'mentionedUsers' ||
   !!db.brands[brand]?.username && t.text.toLowerCase().includes('@' + db.brands[brand].username.toLowerCase());
 
-// X API (di bawah paket Enterprise): komentar hanya boleh ke tweet yang me-mention akun brand (atau tweet sendiri).
-// replyMentionOnly ON (bawaan): tweet lain langsung disiapkan, admin kirim dari app X lewat tombol ✍️ Balas di X.
-// OFF (Enterprise): dicoba lewat API; ditolak sekali → brand ditandai (dicoba lagi setelah 7 hari).
-// Bukan masalah akun: tidak dihitung ke rem darurat
+// X API: komentar ke tweet tertentu bisa ditolak ("You can only reply to or quote posts where you are mentioned…"),
+// tergantung tweet / pemiliknya (tweet project lain dari akun yang sama bisa saja lolos). Ditolak → hanya tweet itu
+// yang disiapkan untuk dikirim admin dari app X (tombol ✍️ Balas di X). Bukan masalah akun: tidak dihitung ke rem darurat
 const mentionOnlyErr = (e) => /only reply to or quote posts where you are mentioned/i.test(errText(e));
-const mentionsOf = (text = '') => (text.match(/@\w{1,15}/g) || []).map((m) => m.slice(1).toLowerCase());
-const mentionOnly = (b) => db.auto.replyMentionOnly || Date.now() - (db.brands[b]?.mentionOnly || 0) < 7 * DAY;
-const apiCanReply = (b, mentions = []) => !mentionOnly(b) || mentions.includes(db.brands[b].username?.toLowerCase());
 const replyIntent = (tid, text) => `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(text)}`;
-async function markMentionOnly(b) {
-  if (mentionOnly(b)) return;
-  db.brands[b].mentionOnly = Date.now(); save();
-  await report(`ℹ️ X hanya mengizinkan akun ${esc(brandLabel(b))} berkomentar lewat API ke tweet yang me-mention akun itu.\n` +
-    'Tweet lain: komentar tetap disiapkan di laporan, kirim lewat tombol ✍️ Balas di X (buka X sebagai akun brand itu, lalu Reply).');
-}
 // Like / Follow ditolak X (paket API / izin app): tombolnya jadi link ke X (dicoba lagi lewat API setelah 7 hari)
 const viaX = (b, a) => Date.now() - (db.brands[b]?.viaX?.[a] || 0) < 7 * DAY;
 const xIntent = { l: (tid) => `https://x.com/intent/like?tweet_id=${tid}`, f: (tid, m) => `https://x.com/intent/follow?screen_name=${m.username}` };
@@ -264,13 +254,13 @@ async function manualReply(j, tpl, body) {
   db.repliedTweets = [...db.repliedTweets.slice(-999), j.tweetId]; // tidak diantre ulang
   db.manual[j.tweetId] = {
     username: j.username, authorId: j.userId, at: Date.now(), brands: [j.brand],
-    texts: { [j.brand]: body }, done: {}, mentions: mentionsOf(j.tweetText)
+    texts: { [j.brand]: body }, done: {}, noApi: { [j.brand]: Date.now() }
   };
   stat('manual');
   await report(
     `✍️ <b>Komentar siap</b> · ${esc(brandLabel(j.brand))}\nProject: <b>@${esc(j.username)}</b> (opt-in)\nSumber: ${esc(j.source || j.channel)}\n` +
     `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n` +
-    `<i>Tweet ini tidak me-mention akun brand, jadi X tidak mengizinkan komentar lewat API. Tekan ✍️ Balas di X, lalu Reply.</i>`,
+    `<i>X tidak mengizinkan komentar lewat API ke tweet ini. Tekan ✍️ Balas di X, lalu Reply.</i>`,
     actionRows(j.tweetId)
   );
   return false;
@@ -321,13 +311,11 @@ async function runJob(j) {
   const tpl = pickTemplate(brand.templates, j.handle, true);
   if (!tpl) return dropProject(j, `template komentar ${brand.name} sudah terpakai semua hari ini (tambah: /addtpl ${j.brand} teks)`);
   const body = fill(tpl, { name: j.name, handle: j.username, channel: j.channel });
-  if (!apiCanReply(j.brand, mentionsOf(j.tweetText))) return manualReply(j, tpl, body);
   let data;
   try {
     ({ data } = await clients[j.brand].v2.reply(body, j.tweetId));
   } catch (e) {
     if (!mentionOnlyErr(e)) throw e;
-    await markMentionOnly(j.brand);
     return manualReply(j, tpl, body);
   }
   useTemplate(j.handle, tpl);
@@ -391,15 +379,14 @@ async function notOptedIn(handle, channelName) {
       useTemplate('manual:' + b, tpl);
       texts[b] = fill(tpl, vars);
     }
-    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {}, mentions: mentionsOf(tw.text) }; save();
+    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {} }; save();
     stat('manual');
     return report(
       `💬 <b>@${esc(user.username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
       `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
       brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
-      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.' +
-      (brands.some((b) => !apiCanReply(b, db.manual[tw.id].mentions) || viaX(b, 'l') || viaX(b, 'f'))
-        ? ' Tombol "… di X" = buka X (komentar sudah terisi) sebagai akun brand itu, lalu tekan sendiri.' : '') + '</i>',
+      '\n<i>Tekan tombol dari akun brand itu (tanpa buka app X), ikut batas per jam/hari: 💬 = komentar + like + follow sekaligus.' +
+      (brands.some((b) => viaX(b, 'l') || viaX(b, 'f')) ? ' Tombol "… di X" = buka X sebagai akun brand itu, lalu tekan sendiri.' : '') + '</i>',
       actionRows(tw.id)
     );
   } catch (e) {
@@ -410,7 +397,8 @@ async function notOptedIn(handle, channelName) {
 }
 // ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
 // Dipicu admin satu per satu (bukan otomatis — X melarang komentar/like/follow otomatis ke akun yang tidak minta).
-// 1 tekan = 1 aksi dari akun brand, ikut batas per jam/hari (Jeda & Batas). Tekan dua kali tidak dikirim dobel
+// 💬 = komentar + like + follow dari akun brand itu; ❤️ / 👤 = 1 aksi. Ikut batas per jam/hari (Jeda & Batas).
+// Tekan dua kali tidak dikirim dobel
 const ACT_LABEL = { c: ['💬 Kirim', '✅ Terkirim'], l: ['❤️ Like', '✅ Liked'], f: ['👤 Follow', '✅ Followed'] };
 function actionRows(tid) {
   const m = db.manual[tid];
@@ -421,11 +409,11 @@ function actionRows(tid) {
       const done = m.done[`${a}:${b}`];
       const name = a === 'c' || multi ? ` · ${brandName(b)}` : '';
       // Aksi yang ditolak X lewat API: link ke X (admin yang tekan di sana)
-      if (!done && a === 'c' && !apiCanReply(b, m.mentions)) return Markup.button.url(`✍️ Balas di X${name}`, replyIntent(tid, m.texts[b]));
+      if (!done && a === 'c' && m.noApi?.[b]) return Markup.button.url(`✍️ Balas di X${name}`, replyIntent(tid, m.texts[b]));
       if (!done && a !== 'c' && viaX(b, a)) return Markup.button.url(`${ACT_LABEL[a][0]} di X${name}`, xIntent[a](tid, m));
       return btn(`${ACT_LABEL[a][done ? 1 : 0]}${name}`, `mx:${a}:${b}:${tid}`);
     }));
-  const first = m.brands.find((b) => m.texts[b] && apiCanReply(b, m.mentions)); // ✍️ Balas di X per brand sudah ada
+  const first = m.brands.find((b) => m.texts[b] && !m.noApi?.[b]); // ✍️ Balas di X per brand sudah ada
   rows.push([
     ...(first ? [Markup.button.url('✍️ Ubah di X', replyIntent(tid, m.texts[first]))] : []),
     Markup.button.url('🔗 Tweet', `https://x.com/${m.username}/status/${tid}`),
@@ -435,55 +423,86 @@ function actionRows(tid) {
 }
 const busy = new Set();
 const meId = async (b) => (db.brands[b].userId ||= (await clients[b].v2.me()).data.id);
+// Like + follow ikut tekanan 💬 (aksi admin, bukan otomatis). Gagal di sini tidak membatalkan komentar;
+// limit X (429) like/follow tidak menjedakan akun (komentar tetap jalan)
+async function likeAndFollow(m, b, tid) {
+  const done = [];
+  for (const a of ['l', 'f']) {
+    if (m.done[`${a}:${b}`] || (a === 'f' && !m.authorId) || viaX(b, a) || !withinLimits(b)) continue;
+    try {
+      if (a === 'l') await clients[b].v2.like(await meId(b), tid);
+      else await clients[b].v2.follow(await meId(b), m.authorId);
+      m.done[`${a}:${b}`] = Date.now();
+      (db.sentAt[b] ||= []).push(Date.now());
+      done.push(a === 'l' ? '❤️ di-like' : '👤 di-follow');
+    } catch (e) {
+      console.error('like/follow:', e);
+      if (e?.code === 403 && !/blocked/i.test(errText(e))) (db.brands[b].viaX ||= {})[a] = Date.now();
+    }
+  }
+  return done;
+}
 bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   // Laporan bisa dilihat subscriber channel: hanya ADMIN_IDS yang boleh menekan
   if (!isAdmin(ctx)) return ctx.answerCbQuery('Khusus admin').catch(() => {});
   const [, a, b, tid] = ctx.match;
   const key = `${a}:${b}`;
   const alert = (t) => ctx.answerCbQuery(t.slice(0, 190), { show_alert: true }).catch(() => {});
+  const toast = (t) => ctx.answerCbQuery(t.slice(0, 190)).catch(() => {});
+  const redraw = () => ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
   const m = db.manual[tid];
   if (!m || !m.brands.includes(b)) return alert('Tombol ini sudah kedaluwarsa (lebih dari 3 hari).');
-  if (m.done[key]) return ctx.answerCbQuery('Sudah dilakukan ✅').catch(() => {});
+  if (m.done[key]) return toast('Sudah dilakukan ✅');
   const verb = { c: 'Reply', l: 'Like', f: 'Follow' }[a];
-  const toX = async (why) => {
-    await ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
-    return alert(`${why} Tombolnya jadi link ke X: buka sebagai akun ${brandName(b)}, lalu tekan ${verb}.`);
-  };
-  const mentionWhy = `X hanya mengizinkan komentar lewat API ke tweet yang me-mention akun ${brandName(b)}.`;
   // Tombol lama dari sebelum X menolak: langsung ke link X, tanpa API
-  if (a === 'c' ? !apiCanReply(b, m.mentions) : viaX(b, a)) return toX(a === 'c' ? mentionWhy : `X menolak ${verb} lewat API untuk akun ${brandName(b)}.`);
+  if (a === 'c' ? m.noApi?.[b] : viaX(b, a)) {
+    await redraw();
+    return toast(`Pakai tombol "… di X" · ${brandName(b)}: buka X sebagai akun itu, lalu tekan ${verb}.`);
+  }
   if (!clients[b]) return alert(`Akun X ${brandName(b)} belum tersambung.`);
   if (isDown(b) || limited(b)) return alert(`Akun ${brandName(b)} sedang jeda/dihentikan — coba lagi nanti.`);
   if (!withinLimits(b)) return alert(`Batas akun ${brandName(b)} tercapai (${db.limits.maxPerHour}/jam, ${db.limits.maxPerDay}/hari). Ubah di /menu → Jeda & Batas.`);
-  if (busy.has(tid + key)) return ctx.answerCbQuery('Sedang diproses…').catch(() => {});
+  if (busy.has(tid + key)) return toast('Sedang diproses…');
   busy.add(tid + key);
+  let extra = [];
   try {
     const x = clients[b].v2;
     if (a === 'c') {
-      const { data } = await x.reply(m.texts[b], tid);
-      m.replyId = data.id;
-      stat('replies', b);
+      try {
+        const { data } = await x.reply(m.texts[b], tid);
+        m.replyId = data.id;
+        stat('replies', b);
+      } catch (e) {
+        if (!mentionOnlyErr(e)) throw e;
+        (m.noApi ||= {})[b] = Date.now(); // tweet ini hanya bisa dibalas dari app X
+      }
+      extra = await likeAndFollow(m, b, tid);
     } else if (a === 'l') await x.like(await meId(b), tid);
     else await x.follow(await meId(b), m.authorId);
   } catch (e) {
     console.error('aksi tombol:', e);
-    if (a === 'c' && mentionOnlyErr(e)) { await markMentionOnly(b); return toX(mentionWhy); }
     // Like / Follow tidak diizinkan untuk app / paket API ini (bukan karena diblokir project)
     if (a !== 'c' && e?.code === 403 && !/blocked/i.test(errText(e))) {
       (db.brands[b].viaX ||= {})[a] = Date.now(); save();
-      return toX(`X menolak ${verb} lewat API (${String(e?.data?.detail || e?.data?.title || e.message).slice(0, 60)}).`);
+      await redraw();
+      return toast(`X menolak ${verb} lewat API — tombolnya jadi link ke X: buka sebagai akun ${brandName(b)}, lalu tekan ${verb}.`);
     }
     if (e?.code === 429) await xError(e, `${ACT_LABEL[a][0]} @${m.username}`, b);
     return alert(`❌ ${a === 'c' && cannotReply(e)
-      ? 'X menolak komentar lewat API untuk tweet ini (project belum pernah me-mention / berinteraksi dengan akun brand). Pakai tombol ✍️ Ubah di X.'
+      ? 'X menolak komentar lewat API untuk tweet ini (balasan dibatasi pemilik tweet / tweet dihapus).'
       : e?.data?.detail || e?.data?.title || e.message}`);
   } finally {
     busy.delete(tid + key);
   }
+  const more = extra.length ? ` · ${extra.join(', ')}` : '';
+  if (a === 'c' && m.noApi?.[b]) {
+    save(); await redraw();
+    return toast(`X hanya mengizinkan tweet ini dibalas dari app X: tekan ✍️ Balas di X · ${brandName(b)}, lalu Reply${more}`);
+  }
   (db.sentAt[b] ||= []).push(Date.now());
   m.done[key] = Date.now(); save();
-  await ctx.answerCbQuery({ c: `✅ Komentar terkirim dari ${brandLabel(b)}`, l: '✅ Di-like', f: `✅ @${m.username} di-follow` }[a].slice(0, 190)).catch(() => {});
-  await ctx.editMessageReplyMarkup({ inline_keyboard: actionRows(tid) }).catch(() => {});
+  await toast({ c: `✅ Komentar terkirim dari ${brandLabel(b)}${more}`, l: '✅ Di-like', f: `✅ @${m.username} di-follow` }[a]);
+  await redraw();
 });
 
 async function processProject(handle, channelName, t0, brand) {
@@ -1117,7 +1136,7 @@ async function setAccount(ctx, brand, keys) {
   const isNew = !db.brands[brand];
   db.brands[brand] ||= newBrand(brand);
   Object.assign(db.brands[brand], { x: creds, username: me.username, userId: me.id });
-  delete db.brandDown[brand]; delete db.brands[brand].mentionOnly; delete db.brands[brand].viaX; failStreak[brand] = 0;
+  delete db.brandDown[brand]; delete db.brands[brand].viaX; failStreak[brand] = 0;
   initClients(); save();
   ctx.reply(
     `✅ Akun X ${brandName(brand)} ${hadKeys ? 'diganti' : 'tersambung'}: @${me.username}\n` +
@@ -1530,9 +1549,6 @@ function autoPanel() {
       `📢 <b>Baca channel publik: tiap ${a.webPollSec} detik</b>\nSeberapa sering bot membuka halaman web channel target.\n\n` +
       `💬 <b>Komentar 1-tap (project belum opt-in): ${a.manualAssist ? 'ON' : 'OFF'}</b>\n` +
       'Bot mencari tweet terbaru project &amp; menyiapkan komentarnya; Anda tinggal tekan 💬 di laporan lalu Reply di X. Memakai kuota baca API X.\n\n' +
-      `✍️ <b>Komentar lewat app X (tweet tanpa mention brand): ${a.replyMentionOnly ? 'ON' : 'OFF'}</b>\n` +
-      'X API (di bawah paket Enterprise) menolak komentar ke tweet yang tidak me-mention akun brand. ON = tombolnya langsung ✍️ Balas di X ' +
-      '(komentar sudah terisi, tekan Reply di X), tanpa popup error. OFF hanya untuk paket Enterprise.\n\n' +
       `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
       `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
       `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +
@@ -1542,7 +1558,6 @@ function autoPanel() {
       ...optionRows('⏱ Cek tweet baru opt-in tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], mnt),
       ...optionRows('📢 Baca channel publik tiap', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v} dtk`),
       [btn(`Komentar 1-tap: ${a.manualAssist ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.manualAssist')],
-      [btn(`Komentar lewat app X: ${a.replyMentionOnly ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.replyMentionOnly')],
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       ...optionRows('📊 Ringkasan harian jam', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
@@ -1557,10 +1572,7 @@ const SETTABLE = {
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
   'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
 };
-const TOGGLE = {
-  'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel,
-  'auto.replyMentionOnly': autoPanel
-};
+const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel };
 
 // Nama di console.x.com (nama lama di developer portal dalam kurung)
 const KEY_STEPS = ['Consumer Key (API Key)', 'Secret Key (API Key Secret)', 'Access Token', 'Access Token Secret'];
