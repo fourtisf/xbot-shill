@@ -312,6 +312,9 @@ await test('Filter & Otomatis: preset dan tombol ON/OFF', async () => {
   await tap(ADMIN, 'm:flt');
   await tap(ADMIN, 'm:set:filter.minFollowers:1000');
   assert.equal(db.filter.minFollowers, 1000);
+  const f = await tap(ADMIN, 'm:set:filter.minFollowers:0'); // "Bebas" = filter followers mati
+  assert.equal(db.filter.minFollowers, 0);
+  assert.ok(buttonsOf(f).some((b) => b.text === '✅ Bebas'));
   await tap(ADMIN, 'm:ask:blacklist');
   await dm(ADMIN, 'scam, rug, presale');
   assert.deepEqual(db.filter.blacklist, ['scam', 'rug', 'presale']);

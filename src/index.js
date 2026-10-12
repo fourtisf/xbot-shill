@@ -1385,8 +1385,8 @@ function fltPanel() {
       `5️⃣ <b>Kata terlarang: ${esc(f.blacklist.join(', ') || '-')}</b>\nProject dengan kata ini di nama/bio dilewati.\n\n` +
       'Tekan angka di bawah untuk mengubah (✅ = yang dipakai sekarang).',
     rows: [
-      ...optionRows('1️⃣ Min. followers', 'filter.minFollowers', [100, 500, 1000, 5000], (v) => (v >= 1000 ? `${v / 1000}rb` : `${v}`)),
-      ...optionRows('2️⃣ Min. umur akun X', 'filter.minAgeDays', [0, 7, 14, 30], (v) => `${v} hari`),
+      ...optionRows('1️⃣ Min. followers', 'filter.minFollowers', [0, 100, 500, 1000, 5000], (v) => (!v ? 'Bebas' : v >= 1000 ? `${v / 1000}rb` : `${v}`)),
+      ...optionRows('2️⃣ Min. umur akun X', 'filter.minAgeDays', [0, 7, 14, 30], (v) => (!v ? 'Bebas' : `${v} hari`)),
       ...optionRows('3️⃣ Jeda project yang sama', 'filter.cooldownDays', [1, 3, 7, 14], (v) => `${v} hari`),
       ...optionRows('4️⃣ Umur tweet maks.', 'filter.maxTweetAgeHours', [12, 24, 48, 72], (v) => `${v} jam`),
       [btn('5️⃣ ✏️ Ubah kata terlarang', 'm:ask:blacklist')],
