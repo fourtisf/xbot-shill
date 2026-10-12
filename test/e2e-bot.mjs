@@ -498,11 +498,16 @@ await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat to
 });
 
 await test('Opt-in manual & hapus lewat tombol', async () => {
+  let p = await tap(ADMIN, 'm:opt');
+  assert.match(p.text, /Bot HANYA berkomentar di tweet project yang ada di daftar ini/);
+  assert.match(p.text, /Masih kosong — bot belum akan berkomentar/);
   await tap(ADMIN, 'm:ask:optin');
   await dm(ADMIN, '@PanelProj');
   assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:optadd:fourtis:panelproj', 'm:optadd:dexvra:panelproj', 'm:optadd:nova:panelproj']);
   await tap(ADMIN, 'm:optadd:dexvra:panelproj');
   assert.equal(db.optins.panelproj.brand, 'dexvra');
+  p = await tap(ADMIN, 'm:opt');
+  assert.match(p.text, /<b>Daftar \(1\)<\/b>\n@panelproj → Dexvra/);
   await tap(ADMIN, 'm:ask:deloptin');
   await dm(ADMIN, '@panelproj');
   assert.equal(db.optins.panelproj, undefined);

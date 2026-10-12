@@ -1315,9 +1315,15 @@ function optPanel() {
   const list = Object.entries(db.optins);
   const lines = list.slice(0, 30).map(([h, o]) => `@${esc(h)} → ${esc(brandName(brandOf(o)))}`);
   return {
-    text: `🤝 <b>Opt-in</b> (${list.length})\n${lines.join('\n') || 'Belum ada.'}${list.length > 30 ? `\n… +${list.length - 30} lagi (/optins)` : ''}\n\n` +
-      `Menunggu verifikasi bio: ${Object.keys(db.pending).length}\n` +
-      (db.auto.publicOptin ? 'Project bisa daftar sendiri dengan /optin @handle di bot ini.' : 'Opt-in publik OFF: hanya Anda yang bisa menambah opt-in (bot privat).'),
+    text: '🤝 <b>Opt-in</b> = daftar project yang SUDAH SETUJU dikomentari akun brand Anda (mis. klien / beli paket promosi).\n' +
+      'Bot HANYA berkomentar di tweet project yang ada di daftar ini. Komentar otomatis ke akun yang tidak setuju = spam menurut X ' +
+      'dan bisa membuat akun brand di-suspend.\n\n' +
+      `<b>Daftar (${list.length})</b>\n${lines.join('\n') || '⚠️ Masih kosong — bot belum akan berkomentar ke project mana pun.'}` +
+      `${list.length > 30 ? `\n… +${list.length - 30} lagi (/optins)` : ''}\n\n` +
+      '<b>Cara menambah</b>\n• ➕ Opt-in manual: kirim @handle X project yang sudah setuju, pilih brand-nya.\n' +
+      (db.auto.publicOptin
+        ? `• Project daftar sendiri: /optin @handle di bot ini, lalu pasang kode di bio X-nya (menunggu verifikasi: ${Object.keys(db.pending).length}).`
+        : '• Atau biarkan project daftar sendiri: nyalakan Opt-in publik di 🤖 Otomatis.'),
     rows: [[btn('➕ Opt-in manual', 'm:ask:optin'), btn('🗑 Hapus opt-in', 'm:ask:deloptin')], HOME]
   };
 }
