@@ -1,6 +1,7 @@
 // Telegraf asli, tapi semua panggilan Bot API dicatat dan dijawab lokal (tanpa jaringan).
 // Pesan diperiksa dengan aturan Telegram asli (HTML, panjang, tombol); yang melanggar ditolak
 // seperti Telegram menolaknya (400) dan dicatat di M.apiErrors.
+import fs from 'node:fs';
 import { Telegraf as RealTelegraf, Telegram, Markup } from 'telegraf';
 
 const M = globalThis.__mock;
@@ -53,6 +54,16 @@ function validate(method, p) {
           }
         }
       }
+    }
+  }
+  if (method === 'sendPhoto' || method === 'sendMediaGroup') {
+    const items = method === 'sendPhoto' ? [{ media: p.photo, caption: p.caption }] : p.media;
+    if (method === 'sendMediaGroup' && (items.length < 2 || items.length > 10)) errs.push(`album harus 2–10 foto (${items.length})`);
+    for (const it of items) {
+      const src = it.media?.source;
+      if (typeof src !== 'string' || !fs.existsSync(src)) errs.push(`file foto tidak ada: ${src}`);
+      else if (fs.statSync(src).size > 10e6) errs.push('foto > 10 MB');
+      if (it.caption && it.caption.length > 1024) errs.push(`caption > 1024 (${it.caption.length})`);
     }
   }
   if (method === 'answerCallbackQuery' && p.text && p.text.length > 200) errs.push(`teks answerCbQuery > 200 (${p.text.length})`);

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { fileURLToPath } from 'url';
 import { Telegraf, Markup } from 'telegraf';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
@@ -1245,10 +1246,29 @@ function connPanel(b) {
       [btn('🔗 Login X (disarankan)', `m:ask:oauth:${b}`)],
       ...donors.map(([k, v]) => [btn(`🔗 Login X pakai app ${v.name}`, `m:oauthreuse:${b}:${k}`)]),
       [btn('🔑 4 kode manual', `m:ask:keys:${b}`)],
-      [btn('⬅️ Akun X', 'm:acc')]
+      [btn('📷 Tutorial bergambar', 'm:guide'), btn('⬅️ Akun X', 'm:acc')]
     ]
   };
 }
+// Gambar tutorial (assets/, dibuat oleh assets/make-tutorial.py — ilustrasi, tanpa data asli)
+const asset = (n) => fileURLToPath(new URL(`../assets/${n}`, import.meta.url));
+const GUIDE = {
+  izin: [asset('tutorial-1-izin.png'), 'Langkah 1 (sekali per app): User authentication settings → Read and write + Web App, Automated App or Bot → isi URL website → Save Changes.'],
+  kode: [asset('tutorial-2-kode.png'), 'Langkah 2: ambil kode HANYA dari bagian OAuth 1.0 Keys. Bearer Token & semua OAuth 2.0 tidak dipakai.'],
+  pin: [asset('tutorial-3-pin.png'), 'Login X: buka link dari bot → login sebagai akun BRAND → Authorize app → kirim PIN ke bot.']
+};
+// Kirim gambar tutorial; kalau gagal, alur tetap jalan (panduan teks tetap dikirim)
+async function sendGuide(ctx, names, captions = {}) {
+  try {
+    const media = names.map((n) => ({ type: 'photo', media: { source: GUIDE[n][0] }, caption: captions[n] || GUIDE[n][1] }));
+    if (media.length === 1) await ctx.replyWithPhoto(media[0].media, { caption: media[0].caption });
+    else await ctx.replyWithMediaGroup(media);
+  } catch (e) {
+    console.error('tutorial:', e.message);
+  }
+}
+const OAUTH_KODE = 'Langkah 2 untuk Login X: cukup baris Consumer Key → Regenerate → salin Consumer Key + Secret Key. Access Token tidak perlu.';
+
 // Login X lewat PIN (OAuth 1.0a): link otorisasi untuk akun brand, token didapat dari PIN
 async function startPinLogin(ctx, brand, appKey, appSecret) {
   let link;
@@ -1260,8 +1280,9 @@ async function startPinLogin(ctx, brand, appKey, appSecret) {
       'Atau pakai "🔑 4 kode manual".');
   }
   awaiting.set(ctx.from.id, { kind: 'pin', brand, appKey, appSecret, token: link.oauth_token, secret: link.oauth_token_secret, at: Date.now() });
+  await sendGuide(ctx, ['pin']);
   return ctx.replyWithHTML(
-    `🔗 <b>Login X untuk ${nameOf(brand)}</b> — langkah terakhir\n\n` +
+    `🔗 <b>Login X untuk ${nameOf(brand)}</b> — langkah terakhir (lihat gambar di atas)\n\n` +
     `1. Buka link ini: <a href="${esc(link.url)}">Login &amp; izinkan akses</a>\n` +
     `2. Login sebagai akun X <b>${nameOf(brand)}</b> (bukan akun pribadi), lalu klik <b>Authorize app</b>\n` +
     '3. X menampilkan <b>PIN</b> (7 angka) → kirim PIN itu ke sini\n\nLink berlaku ±15 menit. /batal untuk batal.',
@@ -1269,14 +1290,14 @@ async function startPinLogin(ctx, brand, appKey, appSecret) {
   );
 }
 const PROMPTS = {
-  keys: (b) => `🔑 <b>Hubungkan akun X ${nameOf(b)} — 4 kode manual</b>\n\n` +
+  keys: (b) => `🔑 <b>Hubungkan akun X ${nameOf(b)} — 4 kode manual</b> (lihat 2 gambar di atas)\n\n` +
     'Di console.x.com → <b>Apps</b> → app Anda, bagian <b>OAuth 1.0 Keys</b>:\n' +
     `• Baris <b>Consumer Key</b> → klik Regenerate → muncul:\n   1. ${KEY_STEPS[0]}\n   2. ${KEY_STEPS[1]}\n` +
     `• Baris <b>Access Token</b> → klik Generate/Regenerate → muncul:\n   3. ${KEY_STEPS[2]}\n   4. ${KEY_STEPS[3]}\n` +
     `   Harus tertulis <b>Read and write</b> dan <b>For @akun-X-${nameOf(b)}</b>.\n\n${NOT_USED}\n\n` +
     `👉 Kirim sekarang: <b>1. ${KEY_STEPS[0]}</b>\n` +
     '(Boleh juga keempatnya sekaligus, dipisah spasi, urut 1–4.)\n\nPesan berisi kode langsung dihapus. /batal untuk batal.',
-  oauth: (b) => `🔗 <b>Login X untuk ${nameOf(b)}</b> — kirim 2 kode app\n\n` +
+  oauth: (b) => `🔗 <b>Login X untuk ${nameOf(b)}</b> — kirim 2 kode app (lihat gambar di atas)\n\n` +
     'Di console.x.com → <b>Apps</b> → app Anda → <b>OAuth 1.0 Keys</b> → baris <b>Consumer Key</b> → klik Regenerate:\n' +
     `   1. ${KEY_STEPS[0]}\n   2. ${KEY_STEPS[1]}\n` +
     'App harus sudah diatur <b>Read and write</b> (User authentication settings).\n\n' + `${NOT_USED}\n\n` +
@@ -1408,6 +1429,9 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'status': panel = { text: statusText(), rows: [[btn('🔄 Refresh', 'm:status')], HOME] }; break;
     case 'acc': panel = accountsPanel(); break;
     case 'conn': if (/^[a-z0-9_]{2,20}$/.test(arg)) panel = connPanel(arg); break;
+    case 'guide':
+      await ctx.answerCbQuery('Mengirim tutorial…').catch(() => {});
+      return sendGuide(ctx, ['izin', 'kode', 'pin']);
     case 'oauthreuse': {
       const [b, from] = args;
       const app = db.brands[from]?.x;
@@ -1499,6 +1523,8 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
         (kind === 'tpl' && (!findBrand(b) || !FIELD[f]))) break;
       awaiting.set(ctx.from.id, { kind, brand: b, field: f, at: Date.now() });
       await ctx.answerCbQuery().catch(() => {});
+      if (kind === 'keys') await sendGuide(ctx, ['izin', 'kode']);
+      if (kind === 'oauth') await sendGuide(ctx, ['izin', 'kode'], { kode: OAUTH_KODE });
       return ctx.replyWithHTML(PROMPTS[kind](b, f));
     }
   }

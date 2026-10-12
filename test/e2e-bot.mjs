@@ -244,15 +244,31 @@ const keysFor = (p) => [`${p}ConsumerKey`.padEnd(25, '0'), `${p}SecretKey`.padEn
 const DK = keysFor('dk'), FT = keysFor('ft'), NK = keysFor('nk'), BAD = keysFor('bad');
 const deletes = () => M.botCalls.filter((c) => c.method === 'deleteMessage').length;
 
-await test('Akun X: tombol Hubungkan → pilihan cara (Login X / pakai app brand lain / 4 kode manual)', async () => {
+const photosTo = (id) => M.botCalls.filter((c) => ['sendPhoto', 'sendMediaGroup'].includes(c.method) && String(c.payload.chat_id) === String(id))
+  .map((c) => (c.method === 'sendPhoto' ? [c.payload.photo.source] : c.payload.media.map((m) => m.media.source)).map((f) => f.split('/').pop()));
+
+await test('Akun X: tombol Hubungkan → pilihan cara (Login X / pakai app brand lain / 4 kode manual / tutorial)', async () => {
   assert.ok(dataOf(await tap(ADMIN, 'm:acc')).includes('m:conn:dexvra'));
   const p = await tap(ADMIN, 'm:conn:dexvra');
   assert.match(p.text, /Hubungkan akun X Dexvra<\/b> — pilih cara/);
-  assert.deepEqual(dataOf(p), ['m:ask:oauth:dexvra', 'm:oauthreuse:dexvra:fourtis', 'm:ask:keys:dexvra', 'm:acc']);
+  assert.deepEqual(dataOf(p), ['m:ask:oauth:dexvra', 'm:oauthreuse:dexvra:fourtis', 'm:ask:keys:dexvra', 'm:guide', 'm:acc']);
+  await tap(ADMIN, 'm:guide');
+  assert.deepEqual(photosTo(ADMIN).at(-1), ['tutorial-1-izin.png', 'tutorial-2-kode.png', 'tutorial-3-pin.png']);
+});
+
+await test('gambar tutorial: PNG valid, ukuran wajar untuk Telegram', async () => {
+  for (const n of ['tutorial-1-izin.png', 'tutorial-2-kode.png', 'tutorial-3-pin.png']) {
+    const buf = fs.readFileSync(new URL(`../assets/${n}`, import.meta.url));
+    assert.equal(buf.toString('latin1', 1, 4), 'PNG', n);
+    const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20);
+    assert.ok(w >= 800 && w + h <= 10000 && buf.length < 1e6, `${n}: ${w}x${h}, ${buf.length} byte`);
+  }
 });
 
 await test('Akun X (4 kode manual): panduan sesuai console X, keempatnya sekaligus, pesan dihapus', async () => {
   const prompt = await tap(ADMIN, 'm:ask:keys:dexvra');
+  assert.deepEqual(photosTo(ADMIN).at(-1), ['tutorial-1-izin.png', 'tutorial-2-kode.png']);
+  assert.match(prompt.text, /lihat 2 gambar di atas/);
   assert.match(prompt.text, /OAuth 1\.0 Keys/);
   assert.match(prompt.text, /1\. Consumer Key \(API Key\)\n   2\. Secret Key \(API Key Secret\)/);
   assert.match(prompt.text, /3\. Access Token\n   4\. Access Token Secret/);
@@ -300,6 +316,7 @@ await test('Akun X: key ditolak X → petunjuk urutan & Read and write, key lama
 
 await test('Login X (PIN) pakai app Fourtis: link login → PIN → akun Dexvra tersambung', async () => {
   await tap(ADMIN, 'm:oauthreuse:dexvra:fourtis');
+  assert.deepEqual(photosTo(ADMIN).at(-1), ['tutorial-3-pin.png']);
   assert.match(messagesTo(ADMIN).at(-1),
     /Login X untuk Dexvra[\s\S]*href="https:\/\/api\.x\.com\/oauth\/authorize\?oauth_token=reqtok&amp;force_login=true"[\s\S]*bukan akun pribadi[\s\S]*PIN/);
   const g = xcalls('generateAuthLink').at(-1);
@@ -316,6 +333,8 @@ await test('Login X (PIN) pakai app Fourtis: link login → PIN → akun Dexvra 
 
 await test('Login X (PIN): 2 kode app dulu; PIN salah ditolak; app key salah → pesan jelas', async () => {
   const p = await tap(ADMIN, 'm:ask:oauth:dexvra');
+  const album = M.botCalls.filter((c) => c.method === 'sendMediaGroup').at(-1).payload.media;
+  assert.match(album[1].caption, /cukup baris Consumer Key/);
   assert.match(p.text, /kirim 2 kode app[\s\S]*1\. Consumer Key \(API Key\)\n   2\. Secret Key \(API Key Secret\)/);
   assert.match(await dm(ADMIN, DK[0]), /diterima \(1\/2\)[\s\S]*2\. Secret Key/);
   await dm(ADMIN, DK[1]);
