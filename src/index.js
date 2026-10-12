@@ -1353,7 +1353,8 @@ function limPanel() {
     text: '⏱ <b>Jeda &amp; Batas</b>\nMengatur seberapa cepat dan seberapa banyak bot berkomentar. ' +
       'Berlaku untuk tiap akun X sendiri-sendiri.\n\n' +
       `1️⃣ <b>Jeda antar aksi: ${fmtGap()}</b>\nBot menunggu selama ini sebelum komentar berikutnya, supaya terlihat seperti manusia.\n\n` +
-      `2️⃣ <b>Jarak ke project yang sama: ${gap} menit</b>\nKomentar ke satu project tidak beruntun, minimal ${gap} menit sekali.\n\n` +
+      `2️⃣ <b>Jeda di project yang sama: ${gap} menit</b>\nKalau 1 project punya beberapa tweet baru, komentarnya tidak dikirim sekaligus: ` +
+      `komentar tweet ke-1 → tunggu ${gap} menit → komentar tweet ke-2. Project lain tetap jalan seperti biasa.\n\n` +
       `3️⃣ <b>Tweet yang dikomentari: ${n} terbaru</b>\nHanya ${n} tweet paling baru dari tiap project yang dikomentari.\n\n` +
       `4️⃣ <b>Maks. komentar per project: ${perDay}x sehari</b>\n\n` +
       `5️⃣ <b>Batas akun: ${db.limits.maxPerHour}x per jam, ${db.limits.maxPerDay}x per hari</b>\nTotal semua komentar + tweet dari satu akun. ` +
@@ -1364,7 +1365,7 @@ function limPanel() {
     rows: [
       [btn('1️⃣ Jeda antar aksi', 'm:noop')],
       GAPS.map(([a, b]) => btn(`${lo === a && hi === b ? '✅ ' : ''}${a < 60 ? `${a}-${b} dtk` : `${a / 60}-${b / 60} mnt`}`, `m:gap:${a}:${b}`)),
-      ...optionRows('2️⃣ Jarak ke project yang sama', 'auto.replyGapMin', [2, 5, 10, 30], mnt),
+      ...optionRows('2️⃣ Jeda komentar di project yang sama', 'auto.replyGapMin', [2, 5, 10, 30], mnt),
       ...optionRows('3️⃣ Berapa tweet terbaru dikomentari', 'filter.tweetsPerProject', [1, 2, 3, 5], (v) => `${v} tweet`),
       ...optionRows('4️⃣ Maks. komentar per project sehari', 'auto.maxRepliesPerProjectPerDay', [1, 2, 3, 5], (v) => `${v}x`),
       ...optionRows('5️⃣ Batas akun per JAM', 'limits.maxPerHour', [10, 20, 30, 50], (v) => `${v}x`),
