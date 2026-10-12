@@ -4,27 +4,22 @@ import path from 'path';
 const FILE = process.env.DB_FILE || './data.json';
 const BACKUP_DIR = path.join(path.dirname(FILE), 'backups');
 
-// Satu brand = satu akun X dengan template sendiri. Template bawaan hanya contoh, ganti lewat /addtpl & /addtweet
+// Satu brand = satu akun X dengan template komentar sendiri. Template bawaan hanya contoh, ganti lewat /addtpl
 export function newBrand(key, name = key[0].toUpperCase() + key.slice(1)) {
   return {
     name,
     x: null, // { appKey, appSecret, accessToken, accessSecret }
     username: null,
-    ownTweetEnabled: false, // tweet bot (project belum opt-in): OFF kecuali dinyalakan pemilik
     templates: [
       `Big things happening at {name} 🔥 watching this one closely`,
       `Love seeing {name} keep shipping 🚀`,
       `{name} is one to watch 👀 tracking it on ${name}`
-    ],
-    tweetTemplates: [
-      `🚀 New project spotted: {name}\nVia {channel}\nx.com/{handle}`,
-      `👀 {name} just landed on the ${name} radar\nx.com/{handle}`
     ]
   };
 }
 
 const defaults = {
-  defaultBrand: 'fourtis', // brand untuk channel tanpa brand & perintah tanpa nama brand
+  defaultBrand: 'fourtis', // brand untuk perintah tanpa nama brand
   brands: {
     fourtis: newBrand('fourtis', 'Fourtis'),
     dexvra: {
@@ -33,14 +28,9 @@ const defaults = {
         '{name} keeps building 🔥 Dexvra is watching',
         'Solid move from {name} 👀',
         'Big potential at {name} 📈 on our list'
-      ],
-      tweetTemplates: [
-        '📡 New on the Dexvra radar: {name}\nx.com/{handle}',
-        '{name} just showed up in our feed 👀\nx.com/{handle}'
       ]
     }
   },
-  channelBrand: {}, // channel -> brand
   channels: [], // '@username' atau id numerik
   reportChat: null,
   paused: false, // pause manual (/pause)
@@ -125,8 +115,6 @@ function load() {
     const main = d.brands[d.defaultBrand];
     if (saved.x) main.x = saved.x;
     if (saved.templates?.length) main.templates = saved.templates;
-    if (saved.ownTweetTemplate) main.tweetTemplates = [saved.ownTweetTemplate];
-    if (typeof saved.ownTweetEnabled === 'boolean') main.ownTweetEnabled = saved.ownTweetEnabled;
   }
   for (const k of ['x', 'templates', 'ownTweetTemplate', 'ownTweetEnabled']) delete d[k];
   if (Array.isArray(d.sentAt)) d.sentAt = { [d.defaultBrand]: d.sentAt };
@@ -138,11 +126,12 @@ function load() {
     Object.assign(d.filter, { minFollowers: 0, minAgeDays: 0, blacklist: [] });
     d.filterOffDefault = true;
   }
-  // Tweet bot dulu ON bawaan; sekarang OFF. Data lama dimatikan sekali — nyalakan lagi lewat tombol kalau mau
-  if (!d.tweetBotDefaultOff) {
-    for (const v of Object.values(d.brands)) v.ownTweetEnabled = false;
-    d.tweetBotDefaultOff = true;
-  }
+  // Tweet bot (akun brand tweet sendiri tentang project) dihapus: buang sisa pengaturan & tweet yang masih antre.
+  // Brand channel ikut dihapus — dulu hanya menentukan akun untuk tweet bot; komentar selalu dari brand opt-in project
+  d.queue = d.queue.filter((j) => j.type === 'reply');
+  for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; }
+  for (const k of Object.keys(d.tplLog || {})) if (k.startsWith('#')) delete d.tplLog[k];
+  for (const k of ['channelBrand', 'tweetBotDefaultOff']) delete d[k];
   return d;
 }
 

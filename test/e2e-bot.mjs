@@ -36,7 +36,6 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   x: { appKey: 'k', appSecret: 's', accessToken: 't', accessSecret: 'a' },
   channels: ['@alpha'],
   reportChat: REPORT,
-  ownTweetEnabled: true, tweetBotDefaultOff: true, // test ini menguji tweet bot, jadi dinyalakan
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 },
   auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0 },
   lastDaily: new Date().toDateString()
@@ -52,6 +51,8 @@ const reports = () => sent().filter((c) => c.payload.chat_id === REPORT).map((c)
 const messagesTo = (id) => sent().filter((c) => String(c.payload.chat_id) === String(id)).map((c) => c.payload.text);
 const xcalls = (name) => M.x.calls.filter((c) => c[0] === name);
 const lookedUp = (h) => xcalls('userByUsername').filter((c) => c[1] === h).length;
+// Project yang terbaca dari channel: yang opt-in dicari di X, yang belum opt-in cukup dilaporkan (tanpa API X)
+const seen = (h) => reports().filter((r) => r.includes(`<b>@${h}</b> belum opt-in`)).length + lookedUp(h);
 async function until(fn, label, ms = 5000) {
   const t = Date.now();
   while (Date.now() - t < ms) {
@@ -132,47 +133,46 @@ await test('jalan hanya dengan BOT_TOKEN + ADMIN_IDS, akun listener tidak dipaka
   assert.equal(M.tg, undefined); // TelegramClient (TG API) tidak pernah dibuat
 });
 
-await test('post di channel tempat bot admin → diproses (tweet)', async () => {
+await test('post di channel tempat bot admin → terbaca; project belum opt-in hanya dilaporkan (tanpa aksi di X)', async () => {
   await channelPost(alpha, 'New gem https://x.com/NewProj 🚀');
-  const c = await until(() => xcalls('tweet').find((c) => c[1].includes('New Project')), 'tweet NewProj');
-  assert.equal(c.at(-1), 'k');
-  assert.match(await reportMatching('tentang <b>@NewProj'), /Sumber: Alpha Calls/);
+  assert.match(await reportMatching('<b>@newproj</b> belum opt-in'), /Sumber: Alpha Calls/);
+  assert.equal(xcalls('tweet').length + xcalls('reply').length + lookedUp('newproj'), 0);
 });
 
 await test('link tersembunyi (text_link) di caption foto ikut terbaca', async () => {
   await channelPost(alpha, 'Cek project ini 👇', {
     caption: true, entities: [{ type: 'text_link', offset: 0, length: 4, url: 'https://x.com/LinkProj' }]
   });
-  await until(() => lookedUp('linkproj'), 'lookup LinkProj');
+  await until(() => seen('linkproj'), 'lookup LinkProj');
 });
 
 await test('channel yang bukan target diabaikan', async () => {
   await channelPost(other, 'x.com/OtherProj');
   await sleep(300);
-  assert.equal(lookedUp('otherproj'), 0);
+  assert.equal(seen('otherproj'), 0);
 });
 
 await test('setelah bot mati: post 10 menit lalu tetap diproses, post terlalu lama dilewati', async () => {
   await channelPost(alpha, 'x.com/OldProj', { date: unix(now - 8 * 3600_000) });
   await channelPost(alpha, 'x.com/LateProj', { date: unix(now - 10 * 60_000) });
-  await until(() => lookedUp('lateproj'), 'lookup LateProj');
-  assert.equal(lookedUp('oldproj'), 0);
+  await until(() => seen('lateproj'), 'lookup LateProj');
+  assert.equal(seen('oldproj'), 0);
 });
 
 await test('post yang sama terkirim dua kali → diproses sekali', async () => {
   await channelPost(alpha, 'x.com/AaaProj', { id: 900 });
   await channelPost(alpha, 'x.com/BbbProj', { id: 900 });
-  await until(() => lookedUp('aaaproj'), 'lookup AaaProj');
+  await until(() => seen('aaaproj'), 'lookup AaaProj');
   await sleep(300);
-  assert.equal(lookedUp('bbbproj'), 0);
+  assert.equal(seen('bbbproj'), 0);
 });
 
 await test('/addchannel: channel privat (tanpa web publik, bot bukan admin) → diberi tahu, terdeteksi otomatis setelah bot admin', async () => {
   assert.match(await dm(ADMIN, '/addchannel @beta dexvra'), /BELUM bisa dibaca: channel privat atau username salah/);
-  assert.match(await dm(ADMIN, '/channels'), /⚠️ @beta → Dexvra \(belum terbaca\)/);
+  assert.match(await dm(ADMIN, '/channels'), /⚠️ @beta \(belum terbaca\)/);
   M.botAdminIn.push(beta.id);
   await until(() => reports().find((r) => r.includes('Mulai dipantau: @beta (bot admin)')), 'deteksi admin', 8000);
-  assert.match(await dm(ADMIN, '/channels'), /✅ @beta → Dexvra · bot admin/);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @beta · bot admin/);
 });
 
 // ---------- Channel publik orang lain: dibaca dari web t.me/s/… (bot bukan admin) ----------
@@ -188,12 +188,12 @@ await test('channel publik orang lain: cukup @username, bot TIDAK perlu admin; p
   M.web.delta = { title: 'Delta Signals', posts: webPosts };
   webPost(50, '<a href="https://x.com/OldWebProj" target="_blank" rel="noopener">x.com/OldWebProj</a>', { date: Date.now() - 60_000 });
   const r = await dm(ADMIN, '/addchannel @delta');
-  assert.match(r, /@delta → Fourtis ditambahkan & dipantau lewat halaman web publik t\.me — bot tidak perlu jadi admin/);
+  assert.match(r, /@delta ditambahkan & dipantau lewat halaman web publik t\.me — bot tidak perlu jadi admin/);
   assert.match(r, /Terbaca 1 post terakhir \(terbaru #50\)/);
   assert.equal(db.lastSeen['@delta'], 50);
-  assert.match(await dm(ADMIN, '/channels'), /✅ @delta → Fourtis · web publik/);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @delta · web publik/);
   await sleep(400);
-  assert.equal(lookedUp('oldwebproj'), 0);
+  assert.equal(seen('oldwebproj'), 0);
 });
 
 await test('web: link biasa, link tersembunyi, tombol link → diproses; kutipan balasan & info channel diabaikan', async () => {
@@ -202,19 +202,19 @@ await test('web: link biasa, link tersembunyi, tombol link → diproses; kutipan
   webPost(52, 'Cek <a href="https://twitter.com/HiddenWebProj?s=21&amp;t=abc" target="_blank">di sini</a> <i class="emoji"><b>🔥</b></i>',
     { buttons: [['Twitter', 'https://x.com/BtnWebProj']] });
   webPost(53, 'Tom &amp; Jerry x.com/AmpProj');
-  await until(() => lookedUp('webproj') && lookedUp('hiddenwebproj') && lookedUp('btnwebproj') && lookedUp('ampproj'), 'lookup post web');
-  assert.match(await reportMatching('tentang <b>@WebProj'), /Sumber: Delta Signals/);
+  await until(() => seen('webproj') && seen('hiddenwebproj') && seen('btnwebproj') && seen('ampproj'), 'lookup post web');
+  assert.match(await reportMatching('<b>@webproj</b> belum opt-in'), /Sumber: Delta Signals/);
   await sleep(400); // beberapa putaran baca web lagi
-  assert.equal(lookedUp('webproj'), 1, 'post yang sama tidak diproses dua kali');
-  assert.equal(lookedUp('oldwebproj'), 0);
-  assert.equal(lookedUp('channelownx'), 0);
+  assert.equal(seen('webproj'), 1, 'post yang sama tidak diproses dua kali');
+  assert.equal(seen('oldwebproj'), 0);
+  assert.equal(seen('channelownx'), 0);
   assert.equal(db.lastSeen['@delta'], 53);
 });
 
 await test('web: post terlalu lama dilewati; t.me error → laporan sekali, channel tetap dipantau, lalu pulih', async () => {
   webPost(54, 'x.com/AncientProj', { date: Date.now() - 8 * 3600_000 });
   await until(() => db.lastSeen['@delta'] === 54, 'lewati post lama');
-  assert.equal(lookedUp('ancientproj'), 0);
+  assert.equal(seen('ancientproj'), 0);
   M.web.delta.down = true;
   await reportMatching('Gagal membaca @delta dari web publik');
   assert.match(await dm(ADMIN, '/channels'), /✅ @delta/);
@@ -227,28 +227,29 @@ await test('web → bot dijadikan admin: langsung pindah jalur bot, post tidak d
   M.botAdminIn.push(delta.id);
   webPost(60, 'x.com/SwitchProj');
   await channelPost(delta, 'x.com/SwitchProj', { id: 60 });
-  await until(() => lookedUp('switchproj'), 'lookup SwitchProj');
+  await until(() => seen('switchproj'), 'lookup SwitchProj');
   await sleep(400);
-  assert.equal(lookedUp('switchproj'), 1);
-  assert.match(await dm(ADMIN, '/channels'), /✅ @delta → Fourtis · bot admin/);
+  assert.equal(seen('switchproj'), 1);
+  assert.match(await dm(ADMIN, '/channels'), /✅ @delta · bot admin/);
   await dm(ADMIN, '/delchannel @delta');
   assert.equal(db.lastSeen['@delta'], undefined);
 });
 
 await test('link t.me diterima (t.me/x, t.me/s/x, link post); link undangan privat dijelaskan', async () => {
   M.web.epsilon = { title: 'Epsilon', posts: [{ id: 7, html: 'hi', date: Date.now() }] };
-  assert.match(await dm(ADMIN, '/addchannel https://t.me/s/Epsilon/7 dexvra'), /@epsilon → Dexvra ditambahkan & dipantau lewat halaman web publik/);
+  assert.match(await dm(ADMIN, '/addchannel https://t.me/s/Epsilon/7'), /@epsilon ditambahkan & dipantau lewat halaman web publik/);
   assert.ok(db.channels.includes('@epsilon'));
   assert.match(await dm(ADMIN, '/addchannel https://t.me/+AbCdEf123'), /link undangan channel PRIVAT/);
-  assert.match(await dm(ADMIN, '/addchannel https://t.me/c/1009999/15'), /-1001009999 → Fourtis ditambahkan, tapi BELUM bisa dibaca/);
+  assert.match(await dm(ADMIN, '/addchannel https://t.me/c/1009999/15'), /-1001009999 ditambahkan, tapi BELUM bisa dibaca/);
   await dm(ADMIN, '/delchannel https://t.me/c/1009999/15');
   assert.ok(!db.channels.includes('-1001009999'));
   assert.match(await dm(ADMIN, '/addchannel bukan-channel'), /Format channel salah/);
   await tap(ADMIN, 'm:ask:channel');
   assert.match(await dm(ADMIN, 't.me/joinchat/AbCdEf'), /link undangan channel PRIVAT/);
-  await dm(ADMIN, 't.me/Zeta_Calls');
-  assert.deepEqual(dataOf(lastPanel(ADMIN)).slice(0, 2), ['m:chadd:fourtis:@zeta_calls', 'm:chadd:dexvra:@zeta_calls']);
-  await dm(ADMIN, '/batal');
+  await dm(ADMIN, 't.me/Zeta_Calls'); // langsung ditambahkan, tanpa pilih brand
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('@zeta_calls ditambahkan')));
+  await dm(ADMIN, '/delchannel @zeta_calls');
+  assert.ok(!db.channels.includes('@zeta_calls'));
   await dm(ADMIN, '/delchannel https://t.me/epsilon');
   assert.ok(!db.channels.includes('@epsilon'));
 });
@@ -365,7 +366,7 @@ await test('Akun X (4 kode manual): panduan sesuai console X, keempatnya sekalig
   await dm(ADMIN, DK.join(' '));
   await until(() => db.brands.dexvra.x?.appKey === DK[0], 'akun Dexvra tersambung');
   assert.ok(deletes() > dels);
-  assert.ok(messagesTo(ADMIN).some((m) => m.includes('Bot akan posting & berkomentar sebagai @dexvra_x')));
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('Bot akan berkomentar sebagai @dexvra_x')));
   await until(() => lastPanel(ADMIN)?.text?.includes('Akun X'), 'panel akun');
   assert.match(lastPanel(ADMIN).text, /Dexvra<\/b>: ✅ @dexvra_x/);
   const conf = await tap(ADMIN, 'm:accdel:dexvra');
@@ -450,54 +451,36 @@ await test('Brand baru lewat tombol: nama dulu, lalu pilih cara & hubungkan', as
   assert.equal(db.brands.nova.x, null);
 });
 
-await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', async () => {
+await test('Channel: tambah lewat tombol (tanpa pilih brand), hapus', async () => {
   M.botChats['@gamma'] = { id: -1001003, type: 'channel', username: 'gamma', title: 'Gamma' };
   M.botAdminIn.push(-1001003);
   await tap(ADMIN, 'm:ask:channel');
   assert.match(await dm(ADMIN, 'bukan channel'), /Format salah/);
   await dm(ADMIN, '@gamma');
-  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma', 'm:chadd:nova:@gamma', 'm:chadd:*:@gamma']);
-  let p = await tap(ADMIN, 'm:chadd:dexvra:@gamma');
-  assert.ok(db.channels.includes('@gamma'));
-  assert.equal(db.channelBrand['@gamma'], 'dexvra');
-  assert.match(lastAnswer().text, /@gamma → Dexvra ditambahkan & sudah dipantau/);
-  assert.match(p.text, /✅ @gamma → Dexvra/);
-  p = await tap(ADMIN, 'm:chb:@gamma');
-  assert.equal(db.channelBrand['@gamma'], 'nova');
-  p = await tap(ADMIN, 'm:chb:@gamma');
-  assert.equal(db.channelBrand['@gamma'], '*');
-  assert.match(p.text, /✅ @gamma → Semua brand/);
-  p = await tap(ADMIN, 'm:chb:@gamma');
-  assert.equal(db.channelBrand['@gamma'], 'fourtis');
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('@gamma ditambahkan & sudah dipantau (bot admin)')));
+  let p = lastPanel(ADMIN);
+  assert.match(p.text, /✅ @gamma · bot admin/);
+  assert.match(p.text, /Channel berlaku untuk semua brand/);
+  assert.ok(dataOf(p).includes('m:chdel:@gamma'));
   p = await tap(ADMIN, 'm:chdel:@gamma');
   assert.ok(!db.channels.includes('@gamma'));
 });
 
-await test('Template: tambah (multi-baris), hapus, dan tweet bot ON/OFF lewat tombol', async () => {
+await test('Template komentar: tambah (multi-baris) & hapus lewat tombol; tidak ada lagi tweet bot', async () => {
   let p = await tap(ADMIN, 'm:tplb');
   assert.deepEqual(dataOf(p).slice(0, 3), ['m:tpl:fourtis', 'm:tpl:dexvra', 'm:tpl:nova']);
   p = await tap(ADMIN, 'm:tpl:dexvra');
-  assert.match(p.text, /Template Dexvra/);
-  await tap(ADMIN, 'm:ask:tpl:dexvra:t');
-  await dm(ADMIN, '🚀 Baru: {name}\nx.com/{handle}');
-  const list = db.brands.dexvra.tweetTemplates;
-  assert.equal(list.at(-1), '🚀 Baru: {name}\nx.com/{handle}');
-  p = await tap(ADMIN, `m:tdel:dexvra:t:${list.length}`);
-  assert.ok(!db.brands.dexvra.tweetTemplates.includes('🚀 Baru: {name}\nx.com/{handle}'));
-  await tap(ADMIN, 'm:twtog:dexvra');
-  assert.equal(db.brands.dexvra.ownTweetEnabled, true);
-  assert.match(lastAnswer().text, /Tweet bot Dexvra: ON/);
-  let q = await tap(ADMIN, 'm:twtog:dexvra');
-  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
-  assert.equal(dataOf(q)[0], 'm:twtog:dexvra'); // tombol ON/OFF paling atas
-  assert.match(q.text, /T = Tweet bot: OFF<\/b>\n<i>Kalau ON:/);
-  // dari panel Otomatis juga bisa, panel Otomatis tetap tampil
-  q = await tap(ADMIN, 'm:twtog:dexvra:auto');
-  assert.equal(db.brands.dexvra.ownTweetEnabled, true);
-  assert.match(q.text, /Tweet bot: Fourtis ON · Dexvra ON/);
-  assert.ok(dataOf(q).includes('m:twtog:fourtis:auto'));
-  await tap(ADMIN, 'm:twtog:dexvra:auto');
-  assert.equal(db.brands.dexvra.ownTweetEnabled, false);
+  assert.match(p.text, /Template komentar Dexvra/);
+  assert.doesNotMatch(p.text, /[Tt]weet bot/);
+  assert.ok(!dataOf(p).some((d) => d.includes('twtog') || d.endsWith(':t')));
+  await tap(ADMIN, 'm:ask:tpl:dexvra:k');
+  await dm(ADMIN, 'Mantap {name}\nterus berkarya 🙌');
+  const list = db.brands.dexvra.templates;
+  assert.equal(list.at(-1), 'Mantap {name}\nterus berkarya 🙌');
+  p = await tap(ADMIN, `m:tdel:dexvra:k:${list.length}`);
+  assert.ok(!db.brands.dexvra.templates.includes('Mantap {name}\nterus berkarya 🙌'));
+  p = await tap(ADMIN, 'm:auto');
+  assert.doesNotMatch(p.text, /[Tt]weet bot/);
 });
 
 await test('Opt-in manual & hapus lewat tombol', async () => {
@@ -577,8 +560,7 @@ await test('setiap perintah admin membalas tanpa error', async () => {
     '/help', '/menu', '/status', '/accounts', '/xstatus', '/channels', '/tpls', '/tpls dexvra', '/optins',
     '/filter', '/filter minAgeDays 7', '/limits', '/limits maxPerDay 60', '/auto', '/auto dailyReportHour 8',
     '/jeda', '/jeda 2 4', '/jeda project 3', '/jeda abc',
-    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99', '/addtweet Tur {name}\nx.com/{handle}', '/deltweet 99',
-    '/tweet off dexvra', '/tweet on dexvra', '/tweet maybe',
+    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99',
     '/addoptin @TourProj dexvra', '/addoptin bad-handle', '/deloptin @tourproj',
     '/addchannel @tourch', '/delchannel @tourch', '/addchannel', '/addchannel @x nobrand',
     '/pause', '/resume', '/resume dexvra', '/resume nobrand',
@@ -594,7 +576,6 @@ await test('setiap perintah admin membalas tanpa error', async () => {
   }
   assert.deepEqual(silent, [], 'perintah tanpa balasan');
   db.brands.dexvra.templates = db.brands.dexvra.templates.filter((t) => !t.startsWith('Tur '));
-  db.brands.fourtis.tweetTemplates = db.brands.fourtis.tweetTemplates.filter((t) => !t.startsWith('Tur '));
   Object.assign(db, JSON.parse(snap));
   assert.equal(db.paused, false);
 });
@@ -633,8 +614,8 @@ await test('Channel laporan lewat tombol: ID dicek dulu dengan pesan tes; ID sal
 });
 
 await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', async () => {
-  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands, channelBrand: db.channelBrand });
-  const skip = /^m:(accdelok|chdel|tdel|optadd|chadd):/; // aksi hapus/tambah diuji terpisah
+  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands });
+  const skip = /^m:(accdelok|chdel|tdel|optadd):/; // aksi hapus/tambah diuji terpisah
   const seen = new Set(), queue = ['m:home'], noAnswer = [], noPanel = [];
   while (queue.length && seen.size < 300) {
     const d = queue.shift();
@@ -656,7 +637,7 @@ await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', asy
 });
 
 await test('data besar (40 template, 300 opt-in, 60 channel): daftar & panel tetap terkirim', async () => {
-  const snap = JSON.stringify({ brands: db.brands, optins: db.optins, channels: db.channels, channelBrand: db.channelBrand });
+  const snap = JSON.stringify({ brands: db.brands, optins: db.optins, channels: db.channels });
   for (let i = 0; i < 40; i++) db.brands.dexvra.templates.push(`Template panjang nomor ${i} untuk {name} `.repeat(4));
   for (let i = 0; i < 300; i++) db.optins[`proj_${i}`] = { at: now, via: 'admin', brand: i % 2 ? 'dexvra' : 'fourtis' };
   for (let i = 0; i < 60; i++) db.channels.push(`@channel_nomor_${i}`);
@@ -667,6 +648,10 @@ await test('data besar (40 template, 300 opt-in, 60 channel): daftar & panel tet
   assert.ok(M.botCalls.filter((c) => c.method === 'sendMessage').length - n > 3, 'daftar panjang dipecah');
   for (const d of ['m:tpl:dexvra', 'm:opt', 'm:ch', 'm:acc', 'm:home', 'm:status']) assert.ok((await tap(ADMIN, d))?.text, d);
   Object.assign(db, JSON.parse(snap));
+});
+
+await test('sepanjang test, bot tidak pernah mem-posting tweet sendiri', async () => {
+  assert.equal(xcalls('tweet').length, 0);
 });
 
 await test('semua pesan bot lolos aturan Telegram (HTML, panjang, tombol, perintah)', async () => {

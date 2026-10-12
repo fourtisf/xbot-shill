@@ -4,7 +4,7 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
 
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
 - **Project belum opt-in** → hanya dilaporkan ke channel laporan (dengan tombol Follow). Tidak ada aksi di X dan kuota API X tidak terpakai.
-  *Tweet bot* (akun brand membuat tweet sendiri tentang project) **OFF bawaan**; nyalakan per brand di /menu → Otomatis atau `/tweet on brand`
+- Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**, lengkap dengan tombol Follow & Buka. Laporan komentar punya tombol **❤️ Like tweet** + **👤 Follow** (1 tap, buka app X sebagai akun brand)
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 
@@ -12,7 +12,7 @@ Semua pengaturan lewat bot Telegram — tidak ada website.
 
 ## Multi brand / multi akun
 
-Satu brand = satu akun X dengan template komentar & tweet sendiri. Brand bawaan: **fourtis** (utama) dan **dexvra**.
+Satu brand = satu akun X dengan template komentar sendiri. Brand bawaan: **fourtis** (utama) dan **dexvra**.
 
 Cara termudah: `/menu` → **👤 Akun X** → **Hubungkan akun …**:
 - **🔗 Login X (disarankan)** — kirim 2 kode app (Consumer Key + Secret Key dari console.x.com → Apps → OAuth 1.0 Keys),
@@ -26,16 +26,14 @@ Cara termudah: `/menu` → **👤 Akun X** → **Hubungkan akun …**:
 /addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
 /addaccount dexvra  APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET
 /addaccount brandbaru ...        # brand baru otomatis dibuat
-/accounts                        # semua brand, akun, jumlah channel/opt-in/template
-/addchannel @channel dexvra      # post channel ini diurus akun Dexvra
+/accounts                        # semua brand, akun, jumlah opt-in/template
+/addchannel @channel             # channel berlaku untuk semua brand
 /addtpl dexvra Solid move from {name} 👀
-/addtweet dexvra 📡 New on our radar: {name}\nx.com/{handle}
 ```
 
 Siapa yang bertindak:
-- **Project opt-in** → akun brand yang dipilih project saat `/optin` (tombol pilihan brand), dari channel mana pun
-- **Project belum opt-in** → akun brand channel tempat link diposting (`/addchannel @ch brand`; tanpa brand = brand utama)
-- **Channel "🌐 Semua brand"** (`/addchannel @ch all`, atau tombol *Semua brand*) → project opt-in tetap ke brand pilihannya; project belum opt-in dibagi rata ke brand yang tweet bot-nya ON — **tiap project hanya 1 akun**, dan project yang sama selalu ke akun yang sama
+- **Project opt-in** → akun brand yang dipilih project saat `/optin` (tombol pilihan brand), dari channel mana pun. Channel tidak punya brand
+- **Project belum opt-in** → tidak ada akun yang bertindak, hanya laporan
 
 Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend bersamaan):
 - Satu akun X hanya untuk satu brand, dan satu brand hanya satu akun
@@ -61,7 +59,7 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
 | Antrian tersimpan | Restart / VPS reboot tidak menghilangkan antrian |
 | Cek channel | Bot lapor channel yang belum terbaca (privat / username salah) dan lapor lagi begitu terbaca. Bot dijadikan admin di channel yang tadinya dibaca lewat web → langsung pindah ke jalur bot (instan), tanpa dobel |
-| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`): jumlah komentar, tweet, skip, opt-in, error, status akun X |
+| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`): jumlah komentar, skip, opt-in, error, status akun X |
 | Backup | `data.json` di-backup harian ke `backups/` (7 terakhir); kalau `data.json` rusak, dipulihkan sendiri dari backup |
 | Restart | pm2 menyalakan ulang bot kalau crash atau VPS reboot |
 
@@ -92,9 +90,9 @@ pm2 logs xagent                  # lihat log
 ## Setup di Telegram (sekali saja)
 
 1. DM bot: `/addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET` lalu `/addaccount dexvra ...` (pesan otomatis dihapus)
-2. `/addchannel @channeltarget fourtis` atau `... dexvra` (boleh juga link `https://t.me/channeltarget`; ulangi untuk tiap channel). Channel publik langsung terbaca tanpa admin — bot membalas berapa post yang terbaca. Kalau bot bilang *belum bisa dibaca*: cek ejaan username, atau channel itu privat (jadikan bot admin)
+2. `/addchannel @channeltarget` (boleh juga link `https://t.me/channeltarget`; ulangi untuk tiap channel). Channel publik langsung terbaca tanpa admin — bot membalas berapa post yang terbaca. Kalau bot bilang *belum bisa dibaca*: cek ejaan username, atau channel itu privat (jadikan bot admin)
 3. Buat channel laporan, jadikan bot admin (izin *Post Messages*), lalu /menu → 📨 Channel laporan → kirim ID channel (`-100…`). Bisa juga `/setreport -100…` di DM bot, atau posting `/setreport` di channel itu. Bot mengirim pesan tes dulu; kalau gagal, bot memberi tahu dan channel lama tetap dipakai
-4. Ganti template contoh: `/tpls` untuk lihat, `/addtpl dexvra ...`, `/addtweet fourtis ...`, `/deltpl dexvra 1`
+4. Ganti template contoh: `/tpls` untuk lihat, `/addtpl dexvra ...`, `/deltpl dexvra 1`
 5. `/status` dan `/accounts` untuk cek semua sudah ✅
 
 ## Opt-in project
@@ -115,10 +113,8 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 | Perintah | Fungsi |
 |---|---|
 | `/accounts` `/addaccount brand ...` `/delaccount brand` | Akun X per brand (`/setx ...` = `/addaccount` brand utama) |
-| `/channels` `/addchannel @ch [brand]` `/delchannel` | Kelola channel target & brand-nya |
+| `/channels` `/addchannel @ch` `/delchannel` | Kelola channel target (berlaku untuk semua brand) |
 | `/tpls [brand]` `/addtpl [brand] teks` `/deltpl [brand] n` | Template komentar per brand (`{name}` `{handle}` `{channel}`; `{channel}` kosong untuk komentar dari pantauan tweet) |
-| `/addtweet [brand] teks` `/deltweet [brand] n` | Template tweet bot per brand (dirotasi) |
-| `/tweet on\|off [brand]` | Tweet bot untuk project belum opt-in (semua brand atau satu brand) |
 | `/optins` `/addoptin @h [brand]` `/deloptin` | Daftar project opt-in & brand-nya (+ yang menunggu verifikasi) |
 | `/filter` `/filter minFollowers 1000` | minFollowers, minAgeDays, blacklist (bawaan **mati**: setiap link X dari channel langsung diproses), cooldownDays, tweetsPerProject, maxTweetAgeHours |
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |
