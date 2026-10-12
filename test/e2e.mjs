@@ -555,6 +555,37 @@ await test('project yang sama di channel brand lain tidak di-tweet dua akun', as
   assert.equal(xcalls('tweet').filter((c) => c[1].includes('Dex New')).length, 1);
 });
 
+await test('channel "Semua brand": project belum opt-in dibagi ke dua akun, tiap project hanya 1 tweet', async () => {
+  const names = ['AllOne', 'AllTwo', 'AllThree', 'AllFour'];
+  names.forEach((n, i) => { users[n.toLowerCase()] = user('u9' + i, n, `${n} Labs`); });
+  assert.match(await dm(ADMIN, '/addchannel @gamma all'), /@gamma → Semua brand ditambahkan & sudah dipantau/);
+  try {
+    assert.match(await dm(ADMIN, '/channels'), /@gamma → Semua brand/);
+    assert.match(await dm(ADMIN, '/accounts'), /Dexvra<\/b>[^]*?Channel: 1 ·/); // channel "Semua brand" ikut terhitung di tiap brand
+    for (const n of names) post(gamma, `x.com/${n}`);
+    const tweets = await until(() => {
+      const t = names.map((n) => xcalls('tweet').filter((c) => c[1].includes(`${n} Labs`)));
+      return t.every((x) => x.length) && t;
+    }, 'tweet semua project');
+    await tick(5);
+    for (const t of names.map((n) => xcalls('tweet').filter((c) => c[1].includes(`${n} Labs`)))) assert.equal(t.length, 1);
+    assert.deepEqual(new Set(tweets.map((t) => t[0].at(-1))), new Set(['k', 'dk'])); // dua akun kebagian
+    // Brand yang tweet bot-nya OFF tidak kebagian
+    await dm(ADMIN, '/tweet off dexvra');
+    users.allfive = user('u95', 'AllFive', 'AllFive Labs'); users.allsix = user('u96', 'AllSix', 'AllSix Labs');
+    post(gamma, 'x.com/AllFive x.com/AllSix');
+    const c = await until(() => {
+      const t = ['AllFive', 'AllSix'].map((n) => xcalls('tweet').find((c) => c[1].includes(`${n} Labs`)));
+      return t.every(Boolean) && t;
+    }, 'tweet AllFive & AllSix');
+    assert.deepEqual(c.map((x) => x.at(-1)), ['k', 'k']);
+  } finally { // kembalikan supaya test berikutnya tidak ikut gagal
+    await dm(ADMIN, '/tweet on dexvra');
+    await dm(ADMIN, '/addchannel @gamma dexvra');
+  }
+  assert.equal(db.channelBrand['@gamma'], 'dexvra');
+});
+
 await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {
   users.brandproj = user('u26', 'BrandProj', 'Brand Project');
   M.x.timelines.u26 = [{ id: snow(now, 500), text: 'brand news', created_at: new Date().toISOString() }];

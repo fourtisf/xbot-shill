@@ -448,7 +448,7 @@ await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', asy
   await tap(ADMIN, 'm:ask:channel');
   assert.match(await dm(ADMIN, 'bukan channel'), /Format salah/);
   await dm(ADMIN, '@gamma');
-  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma', 'm:chadd:nova:@gamma']);
+  assert.deepEqual(dataOf(lastPanel(ADMIN)), ['m:chadd:fourtis:@gamma', 'm:chadd:dexvra:@gamma', 'm:chadd:nova:@gamma', 'm:chadd:*:@gamma']);
   let p = await tap(ADMIN, 'm:chadd:dexvra:@gamma');
   assert.ok(db.channels.includes('@gamma'));
   assert.equal(db.channelBrand['@gamma'], 'dexvra');
@@ -456,6 +456,9 @@ await test('Channel: tambah lewat tombol + pilih brand, ganti brand, hapus', asy
   assert.match(p.text, /✅ @gamma → Dexvra/);
   p = await tap(ADMIN, 'm:chb:@gamma');
   assert.equal(db.channelBrand['@gamma'], 'nova');
+  p = await tap(ADMIN, 'm:chb:@gamma');
+  assert.equal(db.channelBrand['@gamma'], '*');
+  assert.match(p.text, /✅ @gamma → Semua brand/);
   p = await tap(ADMIN, 'm:chb:@gamma');
   assert.equal(db.channelBrand['@gamma'], 'fourtis');
   p = await tap(ADMIN, 'm:chdel:@gamma');

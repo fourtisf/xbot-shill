@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 import { Telegraf, Markup } from 'telegraf';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
@@ -32,14 +33,27 @@ function initClients() {
   for (const [b, v] of Object.entries(db.brands)) if (v.x) clients[b] = new TwitterApi(v.x).readWrite;
 }
 initClients();
-const brandName = (b) => db.brands[b]?.name || b;
+const ALL = '*'; // channel untuk semua brand
+const ALL_WORDS = ['all', 'semua', '*'];
+const brandName = (b) => (b === ALL ? 'Semua brand' : db.brands[b]?.name || b);
 const brandLabel = (b) => `${brandName(b)}${db.brands[b]?.username ? ` (@${db.brands[b].username})` : ''}`;
 const findBrand = (s) => (s && db.brands[s.toLowerCase()] ? s.toLowerCase() : null);
 const brandOf = (o) => findBrand(o?.brand) || db.defaultBrand; // brand opt-in / pending
 const activeBrands = () => Object.keys(db.brands).filter((b) => clients[b]);
 const isDown = (b) => !!db.brandDown[b]; // dihentikan rem darurat
 const readerBrand = () => [db.defaultBrand, ...activeBrands()].find((b) => clients[b] && !isDown(b)); // untuk baca data umum
-const channelBrand = (c) => findBrand(db.channelBrand[c]) || db.defaultBrand;
+const channelBrand = (c) => (db.channelBrand[c] === ALL ? ALL : findBrand(db.channelBrand[c]) || db.defaultBrand);
+const usesBrand = (c, b) => [b, ALL].includes(channelBrand(c));
+// Akun yang mengurus project dari channel. Project opt-in selalu diurus brand pilihannya (processSafe).
+// Channel "Semua brand": project yang belum opt-in dibagi rata ke brand yang tweet bot-nya ON, tetap per
+// project (dari nama project) — satu project hanya pernah di-tweet SATU akun
+function projectBrand(ch, handle) {
+  const b = channelBrand(ch);
+  if (b !== ALL) return b;
+  const ready = Object.keys(db.brands).filter((k) => clients[k] && db.brands[k].ownTweetEnabled);
+  if (!ready.length) return db.defaultBrand;
+  return ready[createHash('sha1').update(handle).digest().readUInt32BE(0) % ready.length];
+}
 async function accountStatus(b) {
   if (!clients[b]) return '❌ belum ada akun';
   const down = isDown(b) ? ` · 🛑 dihentikan (${db.brandDown[b].reason}) — /resume ${b}` : '';
@@ -429,7 +443,7 @@ function onChannelPost(msg, chat, t0, ch) {
   db.lastSeen[key] = msg.id; save();
   if (db.paused) return false;
   const urls = (msg.entities || []).map((e) => e.url).filter(Boolean);
-  for (const h of extractHandles(msg.message || '', urls)) processSafe(h, chat.title || chat.username, t0, channelBrand(ch));
+  for (const h of extractHandles(msg.message || '', urls)) processSafe(h, chat.title || chat.username, t0, projectBrand(ch, h));
   return true;
 }
 const tooOld = (at) => Date.now() - at > db.auto.catchUpMaxAgeHours * 3600_000;
@@ -802,7 +816,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 /setx ... — sama dengan /addaccount untuk brand utama
 
 <b>Channel</b> (publik: bot tidak perlu admin)
-/addchannel @channel [brand] · /delchannel @channel · /channels
+/addchannel @channel [brand|all] · /delchannel @channel · /channels
 /setreport — jalankan di channel laporan
 
 <b>Template per brand</b> (variabel: {name} {handle} {channel})
@@ -936,7 +950,7 @@ async function setAccount(ctx, brand, keys) {
   if (!brand || keys.length < 4 || keys.some((k) => !k)) {
     return ctx.reply('Format: /addaccount brand API_KEY API_KEY_SECRET ACCESS_TOKEN ACCESS_TOKEN_SECRET\nContoh brand: fourtis, dexvra\nLebih mudah: /menu → Akun X → Hubungkan akun');
   }
-  if (!/^[a-z0-9_]{2,20}$/.test(brand)) return ctx.reply('Nama brand: huruf kecil/angka tanpa spasi, contoh: dexvra');
+  if (!/^[a-z0-9_]{2,20}$/.test(brand) || ALL_WORDS.includes(brand)) return ctx.reply('Nama brand: huruf kecil/angka tanpa spasi, contoh: dexvra');
   const [appKey, appSecret, accessToken, accessSecret] = keys;
   const creds = { appKey, appSecret, accessToken, accessSecret };
   const hadKeys = !!db.brands[brand]?.x;
@@ -981,7 +995,7 @@ bot.command('delaccount', (ctx) => {
 });
 bot.command(['accounts', 'xstatus'], async (ctx) => {
   const lines = await Promise.all(Object.entries(db.brands).map(async ([b, v]) => {
-    const chs = db.channels.filter((c) => channelBrand(c) === b).length;
+    const chs = db.channels.filter((c) => usesBrand(c, b)).length;
     const ops = Object.values(db.optins).filter((o) => brandOf(o) === b).length;
     return `<b>${esc(v.name)}</b> (${b})${b === db.defaultBrand ? ' · utama' : ''}\nAkun X: ${esc(await accountStatus(b))}\n` +
       `Channel: ${chs} · Opt-in: ${ops} · Template: ${v.templates.length} komentar, ${v.tweetTemplates.length} tweet` +
@@ -1032,12 +1046,13 @@ function delChannel(c) {
 }
 bot.command('addchannel', async (ctx) => {
   const [, raw, b] = ctx.message.text.split(/\s+/);
-  if (!raw) return ctx.reply(`Format: /addchannel @channel [brand]\n${CH_FORMAT}`);
+  if (!raw) return ctx.reply(`Format: /addchannel @channel [brand|all]\n${CH_FORMAT}`);
   if (INVITE.test(raw)) return ctx.reply(PRIVATE_LINK);
   const c = normChannel(raw);
   if (!c) return ctx.reply(`Format channel salah. ${CH_FORMAT}`);
-  if (b && !findBrand(b)) return ctx.reply(`Brand "${b}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}`);
-  ctx.reply(await addChannel(c, findBrand(b)));
+  const all = ALL_WORDS.includes((b || '').toLowerCase());
+  if (b && !all && !findBrand(b)) return ctx.reply(`Brand "${b}" tidak ada. Pilihan: ${Object.keys(db.brands).join(', ')}, all (semua brand)`);
+  ctx.reply(await addChannel(c, all ? ALL : findBrand(b)));
 });
 bot.command('delchannel', (ctx) => {
   const raw = ctx.message.text.split(/\s+/)[1] || '';
@@ -1242,7 +1257,7 @@ function accountsPanel(checked = {}) {
   const lines = Object.entries(db.brands).map(([b, v]) => {
     const st = checked[b] || (!clients[b] ? '❌ belum ada akun'
       : `${accIcon(b)} @${v.username || '?'}${isDown(b) ? ' · dihentikan' : limited(b) ? ' · rate limit' : ''}`);
-    const chs = db.channels.filter((c) => channelBrand(c) === b).length;
+    const chs = db.channels.filter((c) => usesBrand(c, b)).length;
     const ops = Object.values(db.optins).filter((o) => brandOf(o) === b).length;
     return `<b>${esc(v.name)}</b>: ${esc(st)}\n   channel ${chs} · opt-in ${ops}`;
   });
@@ -1466,8 +1481,10 @@ async function showPanel(ctx, { text, rows }, edit = true) {
   return ctx.reply(text, extra);
 }
 // Pilih brand lewat tombol kalau lebih dari satu, selain itu langsung jalan
-function chooseBrand(ctx, question, data) {
-  return ctx.reply(question, Markup.inlineKeyboard([Object.entries(db.brands).map(([b, v]) => btn(v.name, data(b)))]));
+function chooseBrand(ctx, question, data, all = false) {
+  const rows = [Object.entries(db.brands).map(([b, v]) => btn(v.name, data(b)))];
+  if (all) rows.push([btn('🌐 Semua brand', data(ALL))]);
+  return ctx.reply(question, Markup.inlineKeyboard(rows));
 }
 
 // Kumpulkan kode satu per satu (atau beberapa sekaligus); pesan berisi kode langsung dihapus.
@@ -1521,6 +1538,7 @@ async function handleInput(ctx, a) {
     case 'newbrand': {
       const b = text.toLowerCase();
       if (!/^[a-z0-9_]{2,20}$/.test(b)) return again('Nama brand: huruf kecil/angka tanpa spasi, contoh: nova. Kirim lagi, atau /batal');
+      if (ALL_WORDS.includes(b)) return again('Nama itu dipakai untuk "semua brand". Kirim nama lain, atau /batal');
       if (db.brands[b]) return again(`Brand "${b}" sudah ada. Pakai tombol Hubungkan/Ganti akun di panel, atau kirim nama lain.`);
       return showPanel(ctx, connPanel(b), false);
     }
@@ -1529,7 +1547,8 @@ async function handleInput(ctx, a) {
       if (INVITE.test(raw)) return again(`${PRIVATE_LINK}\nKirim channel lain, atau /batal`);
       const c = normChannel(raw);
       if (!c) return again(`Format salah. ${CH_FORMAT}. Kirim lagi, atau /batal`);
-      if (brands.length > 1) return chooseBrand(ctx, `Channel ${c} untuk brand mana?`, (b) => `m:chadd:${b}:${c}`);
+      if (brands.length > 1) return chooseBrand(ctx, `Channel ${c} untuk brand mana?\n🌐 Semua brand = project opt-in diurus brand pilihannya, ` +
+        'project lain dibagi rata (tiap project hanya 1 akun).', (b) => `m:chadd:${b}:${c}`, true);
       await ctx.reply(await addChannel(c, brands[0]));
       return showPanel(ctx, channelsPanel(), false);
     }
@@ -1599,7 +1618,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'ch': panel = channelsPanel(); break;
     case 'chref': await refreshChannels().catch((e) => console.error('refreshChannels:', e)); toast = 'Dicek ulang'; panel = channelsPanel(); break;
     case 'chb': {
-      const keys = Object.keys(db.brands);
+      const keys = [...Object.keys(db.brands), ...(Object.keys(db.brands).length > 1 ? [ALL] : [])];
       if (db.channels.includes(arg)) { db.channelBrand[arg] = keys[(keys.indexOf(channelBrand(arg)) + 1) % keys.length]; save(); }
       panel = channelsPanel();
       break;
@@ -1607,7 +1626,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'chdel': delChannel(arg); toast = 'Channel dihapus'; panel = channelsPanel(); break;
     case 'chadd': {
       const [b, ...rest] = args;
-      if (findBrand(b)) { toast = await addChannel(rest.join(':'), b); alert = toast.startsWith('⚠️'); }
+      if (findBrand(b) || b === ALL) { toast = await addChannel(rest.join(':'), b); alert = toast.startsWith('⚠️'); }
       panel = channelsPanel();
       break;
     }

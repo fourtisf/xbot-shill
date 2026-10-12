@@ -34,6 +34,7 @@ Cara termudah: `/menu` → **👤 Akun X** → **Hubungkan akun …**:
 Siapa yang bertindak:
 - **Project opt-in** → akun brand yang dipilih project saat `/optin` (tombol pilihan brand), dari channel mana pun
 - **Project belum opt-in** → akun brand channel tempat link diposting (`/addchannel @ch brand`; tanpa brand = brand utama)
+- **Channel "🌐 Semua brand"** (`/addchannel @ch all`, atau tombol *Semua brand*) → project opt-in tetap ke brand pilihannya; project belum opt-in dibagi rata ke brand yang tweet bot-nya ON — **tiap project hanya 1 akun**, dan project yang sama selalu ke akun yang sama
 
 Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend bersamaan):
 - Satu akun X hanya untuk satu brand, dan satu brand hanya satu akun
