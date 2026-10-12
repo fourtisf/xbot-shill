@@ -353,7 +353,8 @@ async function notOptedIn(handle, channelName) {
       `💬 <b>@${esc(user.username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
       `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
       brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
-      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.</i>',
+      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.\n' +
+      'Kirim ditolak X? Di HP: 📋 Salin → 🔗 Tweet → Reply → tempel.</i>',
       actionRows(tw.id)
     );
   } catch (e) {
@@ -372,9 +373,14 @@ function actionRows(tid) {
   const rows = m.brands.filter((b) => db.brands[b]).map((b) => ['c', 'l', 'f']
     .filter((a) => (a !== 'c' || m.texts[b]) && (a !== 'f' || m.authorId))
     .map((a) => btn(`${ACT_LABEL[a][m.done[`${a}:${b}`] ? 1 : 0]}${a === 'c' || multi ? ` · ${brandName(b)}` : ''}`, `mx:${a}:${b}:${tid}`)));
+  // HP: app X membuka link intent sebagai postingan baru (in_reply_to diabaikan), jadi komentar disalin
+  // (tombol salin bawaan Telegram, maks. 256 karakter) lalu ditempel di Reply tweet-nya. Link intent tetap untuk PC
+  const copy = m.brands.filter((b) => db.brands[b] && m.texts[b] && !m.done[`c:${b}`])
+    .map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: m.texts[b].slice(0, 256) } }));
+  if (copy.length) rows.push(copy);
   const first = m.brands.find((b) => m.texts[b]);
   rows.push([
-    ...(first ? [Markup.button.url('✍️ Ubah di X', `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(m.texts[first])}`)] : []),
+    ...(first ? [Markup.button.url('✍️ Ubah di X (PC)', `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(m.texts[first])}`)] : []),
     Markup.button.url('🔗 Tweet', `https://x.com/${m.username}/status/${tid}`),
     ...(m.replyId ? [Markup.button.url('🔗 Komentar', `https://x.com/i/status/${m.replyId}`)] : [])
   ]);
@@ -409,7 +415,7 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
     if (e?.code === 429) await xError(e, `${ACT_LABEL[a][0]} @${m.username}`, b);
     return alert(`❌ ${a === 'c' && cannotReply(e)
       ? 'X menolak komentar lewat API untuk tweet ini (project belum pernah me-mention / berinteraksi dengan akun brand). Pakai tombol ✍️ Ubah di X.'
-      : e?.data?.detail || e?.data?.title || e.message}`);
+      : e?.data?.detail || e?.data?.title || e.message}${a === 'c' ? '\nDi HP: 📋 Salin → 🔗 Tweet → Reply → tempel.' : ''}`);
   } finally {
     busy.delete(tid + key);
   }

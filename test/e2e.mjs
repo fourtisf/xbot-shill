@@ -600,7 +600,15 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
       [`mx:c:fourtis:${tid}`, `mx:l:fourtis:${tid}`, `mx:f:fourtis:${tid}`],
       [`mx:c:dexvra:${tid}`, `mx:l:dexvra:${tid}`, `mx:f:dexvra:${tid}`]
     ]);
-    assert.equal(new URL(kb[2][0].url).searchParams.get('in_reply_to'), tid); // ✍️ Ubah di X (cadangan)
+    // 📋 Salin per brand (HP: tempel di Reply tweet), ✍️ Ubah di X (PC)
+    assert.deepEqual(kb[2], [
+      { text: '📋 Salin · Fourtis', copy_text: { text: db.manual[tid].texts.fourtis } },
+      { text: '📋 Salin · Dexvra', copy_text: { text: db.manual[tid].texts.dexvra } }
+    ]);
+    assert.match(r, /Di HP: 📋 Salin → 🔗 Tweet → Reply → tempel/);
+    assert.equal(kb[3][0].text, '✍️ Ubah di X (PC)');
+    assert.equal(new URL(kb[3][0].url).searchParams.get('in_reply_to'), tid);
+    assert.equal(kb[3][1].url, `https://x.com/ManualProj/status/${tid}`);
     await tick(3);
     assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0); // tanpa tombol ditekan: bot TIDAK berkomentar
 
@@ -614,6 +622,7 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
     assert.deepEqual(xcalls('reply').filter((c) => c[2] === tid).map((c) => [c[1], c.at(-1)]), [[text, 'k']]);
     const edit = M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
     assert.equal(edit[0][0].text, '✅ Terkirim · Fourtis');
+    assert.deepEqual(edit[2].map((b) => b.text), ['📋 Salin · Dexvra']); // komentar Fourtis sudah terkirim: tidak perlu disalin
     // ❤️ Like & 👤 Follow dari akun Dexvra
     await tap(ADMIN, `mx:l:dexvra:${tid}`);
     await tap(ADMIN, `mx:f:dexvra:${tid}`);

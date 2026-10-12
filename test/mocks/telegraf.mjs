@@ -49,6 +49,9 @@ function validate(method, p) {
         if (row.length > 8) errs.push(`baris tombol > 8 (${row.length})`);
         for (const b of row) {
           if (!b.text) errs.push('teks tombol kosong');
+          if (b.copy_text !== undefined && !(b.copy_text?.text?.length >= 1 && b.copy_text.text.length <= 256)) {
+            errs.push(`copy_text tidak valid (1–256 karakter): ${JSON.stringify(b.copy_text)}`);
+          }
           if (b.callback_data !== undefined && (!b.callback_data || Buffer.byteLength(b.callback_data) > 64)) {
             errs.push(`callback_data tidak valid (${Buffer.byteLength(b.callback_data || '')} byte): ${b.callback_data}`);
           }
