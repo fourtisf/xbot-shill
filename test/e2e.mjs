@@ -83,7 +83,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
     { type: 'reply', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', userId: 'uq', tweetId: '1700000000000000077', tweetText: 'queued news', at: now }
   ],
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 }, // test melakukan banyak aksi
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true },
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true, manualAssist: false },
   lastDaily: new Date().toDateString()
 }));
 
@@ -582,6 +582,33 @@ await test('channel tanpa brand: project opt-in dikomentari akun brand pilihanny
   post(alpha, 'again x.com/DexNew'); // channel lain: tidak dikomentari ulang (cooldown)
   await tick(5);
   assert.equal(repliesTo(t).length, 1);
+});
+
+await test('komentar 1-tap: project belum opt-in → komentar disiapkan per brand (admin yang kirim), bot sendiri tidak berkomentar', async () => {
+  db.auto.manualAssist = true;
+  try {
+    users.manualproj = user('u98', 'ManualProj', 'Manual Labs');
+    const tid = snow(Date.now(), 990);
+    M.x.timelines.u98 = [{ id: tid, text: 'we just launched v1', created_at: new Date().toISOString() }];
+    post(alpha, 'x.com/ManualProj');
+    const r = await reportMatching('<b>@ManualProj</b> belum opt-in — komentar siap dikirim (1 tap)');
+    assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"/);
+    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard.flat();
+    const send = kb.filter((b) => b.text.startsWith('💬'));
+    assert.deepEqual(send.map((b) => b.text), ['💬 Komentar Fourtis', '💬 Komentar Dexvra']);
+    for (const b of send) {
+      const u = new URL(b.url);
+      assert.equal(u.origin + u.pathname, 'https://x.com/intent/tweet');
+      assert.equal(u.searchParams.get('in_reply_to'), tid);
+      assert.match(u.searchParams.get('text'), /Manual Labs/);
+    }
+    assert.ok(kb.some((b) => b.url === `https://x.com/intent/like?tweet_id=${tid}`));
+    assert.ok(kb.some((b) => b.url === 'https://x.com/intent/follow?screen_name=ManualProj'));
+    await tick(3);
+    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0); // bot TIDAK berkomentar sendiri
+  } finally {
+    db.auto.manualAssist = false;
+  }
 });
 
 await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {

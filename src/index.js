@@ -290,13 +290,12 @@ async function runJob(j) {
   const when = j.t0 ? `${((Date.now() - j.t0) / 1000).toFixed(1)}s setelah post channel` : 'dari pantauan tweet baru project opt-in';
   // Like & follow sengaja lewat tombol (1 tap oleh manusia): X melarang like otomatis dan follow otomatis berulang
   const likeBtn = Markup.button.url('❤️ Like tweet', `https://x.com/intent/like?tweet_id=${j.tweetId}`);
-  const followBtn = Markup.button.url('👤 Follow', `https://x.com/intent/follow?screen_name=${j.username}`);
   const openBtn = Markup.button.url('🔗 Buka', `https://x.com/i/status/${data.id}`);
   await report(
     `✅ <b>Komentar terkirim</b> · ${esc(brandLabel(j.brand))}\nProject: <b>@${esc(j.username)}</b>\nSumber: ${esc(j.source || j.channel)}\n` +
     `Tweet: "${esc(j.tweetText.slice(0, 90))}…"\nKomentar: "${esc(body)}"\n<i>${when}</i>\n` +
     `👇 Like &amp; Follow: 1 tap (buka app X sebagai ${brand.username ? `@${esc(brand.username)}` : `akun ${esc(brand.name)}`})`,
-    [[likeBtn, followBtn], [openBtn]]
+    [[likeBtn, followBtn(j.username)], [openBtn]]
   );
   return true;
 }
@@ -304,12 +303,61 @@ async function runJob(j) {
 // ---------- Proses satu project ----------
 const inFlight = new Set();
 const cooling = (handle) => db.history[handle] && Date.now() - db.history[handle] < db.filter.cooldownDays * DAY;
-// Project belum opt-in: tidak ada aksi di X (tanpa kuota API X), hanya dilaporkan sekali per cooldown
-function notOptedIn(handle, channelName) {
+const followBtn = (username) => Markup.button.url('👤 Follow', `https://x.com/intent/follow?screen_name=${username}`);
+const USER_FIELDS = { 'user.fields': ['public_metrics', 'created_at', 'description', 'name'] };
+// Alasan project dilewati filter (null = lolos)
+function filterWhy(user) {
+  const f = db.filter;
+  const ageDays = (Date.now() - new Date(user.created_at)) / DAY;
+  const followers = user.public_metrics?.followers_count ?? 0;
+  const text = `${user.name} ${user.description}`.toLowerCase();
+  const bad = f.blacklist.find((w) => w && text.includes(w.toLowerCase()));
+  if (followers < f.minFollowers) return `followers ${followers} < ${f.minFollowers}`;
+  if (ageDays < f.minAgeDays) return `umur akun ${Math.floor(ageDays)} hari < ${f.minAgeDays}`;
+  return bad ? `kata terlarang "${bad}"` : null;
+}
+
+// Project belum opt-in: bot TIDAK berkomentar sendiri (aturan X: komentar otomatis ke akun yang tidak minta = spam).
+// Kalau "Komentar 1-tap" ON, bot mencari tweet terbarunya dan menyiapkan teks komentar per brand; admin yang
+// menekan kirim di X (tombol membuka X dengan komentar sudah terisi). Dilaporkan sekali per cooldown
+async function notOptedIn(handle, channelName) {
   if (cooling(handle)) return;
   db.history[handle] = Date.now(); save();
-  return report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari\nSumber: ${esc(channelName)}`,
-    [[Markup.button.url('👤 Follow', `https://x.com/intent/follow?screen_name=${handle}`)]]);
+  const plain = (note = '') => report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari otomatis${note}\nSumber: ${esc(channelName)}`,
+    [[followBtn(handle)]]);
+  const rb = readerBrand();
+  const brands = activeBrands().filter((b) => db.brands[b].templates.length);
+  if (!db.auto.manualAssist || !rb || limited(rb) || !brands.length) return plain();
+  try {
+    const x = clients[rb];
+    const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
+    if (!user) return report(`⛔ <b>@${esc(handle)}</b> tidak ditemukan di X\nSumber: ${esc(channelName)}`);
+    const why = filterWhy(user);
+    if (why) { stat('skipped'); return report(`⛔ <b>@${esc(handle)}</b> di-skip — ${esc(why)}\nSumber: ${esc(channelName)}`); }
+    const tl = await x.v2.userTimeline(user.id, { max_results: 5, exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at', 'reply_settings'] });
+    const maxAge = db.filter.maxTweetAgeHours * 3600_000;
+    const tw = (tl.tweets || []).filter((t) => Date.now() - new Date(t.created_at) < maxAge && canReplyTo(t, rb)).sort(newestFirst)[0];
+    if (!tw) return plain(` (tidak ada tweet baru ≤ ${db.filter.maxTweetAgeHours} jam)`);
+    const vars = { name: user.name, handle: user.username, channel: channelName };
+    const send = brands.map((b) => {
+      const tpl = pickTemplate(db.brands[b].templates, 'manual:' + b, false);
+      useTemplate('manual:' + b, tpl);
+      return Markup.button.url(`💬 Komentar ${brandName(b)}`, `https://x.com/intent/tweet?in_reply_to=${tw.id}&text=${encodeURIComponent(fill(tpl, vars))}`);
+    });
+    stat('manual');
+    return report(
+      `💬 <b>@${esc(user.username)}</b> belum opt-in — komentar siap dikirim (1 tap)\nSumber: ${esc(channelName)}\n` +
+      `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
+      '<i>Tekan 💬 → X terbuka dengan komentar sudah terisi → tekan Reply. Pastikan app X sedang login sebagai akun brand itu.</i>',
+      [...chunk(send, 2),
+        [Markup.button.url('❤️ Like tweet', `https://x.com/intent/like?tweet_id=${tw.id}`), followBtn(user.username)],
+        [Markup.button.url('🔗 Buka tweet', `https://x.com/${user.username}/status/${tw.id}`)]]
+    );
+  } catch (e) {
+    console.error(e);
+    await xError(e, `Siapkan komentar @${handle}`, rb);
+    return plain();
+  }
 }
 async function processProject(handle, channelName, t0, brand) {
   const x = clients[brand];
@@ -318,20 +366,9 @@ async function processProject(handle, channelName, t0, brand) {
   if (inFlight.has(handle) || cooling(handle)) return;
   inFlight.add(handle);
   try {
-    const { data: user } = await x.v2.userByUsername(handle, {
-      'user.fields': ['public_metrics', 'created_at', 'description', 'name']
-    });
+    const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
     if (!user) return report(`⛔ <b>@${esc(handle)}</b> tidak ditemukan di X`);
-
-    // Filter
-    const ageDays = (Date.now() - new Date(user.created_at)) / DAY;
-    const followers = user.public_metrics?.followers_count ?? 0;
-    const text = `${user.name} ${user.description}`.toLowerCase();
-    const bad = f.blacklist.find((w) => w && text.includes(w.toLowerCase()));
-    let why = null;
-    if (followers < f.minFollowers) why = `followers ${followers} < ${f.minFollowers}`;
-    else if (ageDays < f.minAgeDays) why = `umur akun ${Math.floor(ageDays)} hari < ${f.minAgeDays}`;
-    else if (bad) why = `kata terlarang "${bad}"`;
+    const why = filterWhy(user);
     if (why) {
       db.history[handle] = Date.now(); stat('skipped');
       return report(`⛔ <b>@${esc(handle)}</b> di-skip — ${esc(why)}\nSumber: ${esc(channelName)}`);
@@ -814,9 +851,18 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 // Post channel lewat (dibaca bot / /setreport punya cek admin sendiri)
 const PUBLIC_CMD = /^\/(start|optin|verify|optout)(@\w+)?(\s|$)/;
 const noticeAt = new Map();
+const pubAwait = new Map(); // project (bukan admin) yang membuka link opt-in -> waktu; balasan berikutnya = username X
 bot.use((ctx, next) => {
   if (ctx.channelPost || isAdmin(ctx)) return next();
   if (db.auto.publicOptin && (PUBLIC_CMD.test(ctx.message?.text || '') || ctx.callbackQuery?.data?.startsWith('optin:'))) return next();
+  const text = ctx.message?.text;
+  if (db.auto.publicOptin && text && !text.startsWith('/') && ctx.chat?.type === 'private' &&
+    Date.now() - (pubAwait.get(ctx.from.id) || 0) < 15 * 60_000) {
+    const handle = norm(text.split(/\s+/)[0]);
+    if (!validHandle(handle)) return ctx.reply('Username X tidak valid. Kirim lagi, contoh: @namaproject');
+    pubAwait.delete(ctx.from.id);
+    return optinFlow(ctx, handle);
+  }
   if (ctx.callbackQuery) return ctx.answerCbQuery('Khusus admin').catch(() => {});
   if (ctx.chat?.type !== 'private' || !ctx.message) return;
   const id = ctx.from.id;
@@ -831,8 +877,11 @@ bot.start((ctx) => {
     setAdminCommands(ctx.chat.id);
     return showPanel(ctx, homePanel(), false);
   }
+  // Juga untuk link opt-in 1-klik (t.me/bot?start=optin): langsung minta username X project
   const names = activeBrands().map(brandName).join(' / ') || 'kami';
-  return ctx.reply(`Hi! Mau tweet project kamu otomatis di-boost oleh ${names}?\nKetik /optin @handle_x_project_kamu`);
+  pubAwait.set(ctx.from.id, Date.now());
+  return ctx.reply(`👋 Hi! Daftarkan project kamu supaya tweet-nya otomatis dikomentari (di-boost) oleh ${names}.\n\n` +
+    'Kirim username X project kamu, contoh: @namaproject');
 });
 bot.command('help', (ctx) => isAdmin(ctx) && ctx.replyWithHTML(HELP));
 
@@ -855,7 +904,10 @@ async function startOptin(ctx, handle, brand) {
 bot.command('optin', async (ctx) => {
   const [, h, b] = ctx.message.text.split(/\s+/);
   if (!h) return ctx.reply('Format: /optin @handle_x');
-  const handle = norm(h);
+  return optinFlow(ctx, norm(h), b);
+});
+// Pilih brand (kalau lebih dari satu), lalu kode verifikasi bio
+function optinFlow(ctx, handle, b) {
   if (!validHandle(handle)) return ctx.reply('Handle X tidak valid. Contoh: /optin @namaproject');
   const avail = activeBrands();
   if (!avail.length) return ctx.reply('Belum ada akun aktif. Coba lagi nanti.');
@@ -865,7 +917,7 @@ bot.command('optin', async (ctx) => {
   if (db.optins[handle]) return ctx.reply(`Project ini sudah opt-in ke ${brandName(brandOf(db.optins[handle]))} ✅`);
   return ctx.reply(`Opt-in @${handle} ke brand mana?`,
     Markup.inlineKeyboard(avail.map((x) => Markup.button.callback(brandName(x), `optin:${x}:${handle}`))));
-});
+}
 bot.action(/^optin:([a-z0-9_]+):([a-z0-9_]{1,15})$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const [, brand, handle] = ctx.match;
@@ -1270,6 +1322,7 @@ function tplPanel(b) {
     ]
   };
 }
+const optinLink = () => `https://t.me/${bot.botInfo?.username || 'NAMA_BOT'}?start=optin`;
 function optPanel() {
   const list = Object.entries(db.optins);
   const lines = list.slice(0, 30).map(([h, o]) => `@${esc(h)} → ${esc(brandName(brandOf(o)))}`);
@@ -1281,8 +1334,9 @@ function optPanel() {
       `${list.length > 30 ? `\n… +${list.length - 30} lagi (/optins)` : ''}\n\n` +
       '<b>Cara menambah</b>\n• ➕ Opt-in manual: kirim @handle X project yang sudah setuju, pilih brand-nya.\n' +
       (db.auto.publicOptin
-        ? `• Project daftar sendiri: /optin @handle di bot ini, lalu pasang kode di bio X-nya (menunggu verifikasi: ${Object.keys(db.pending).length}).`
-        : '• Atau biarkan project daftar sendiri: nyalakan Opt-in publik di 🤖 Otomatis.'),
+        ? `• 🔗 <b>Link opt-in 1-klik</b> — sebar ke project (bio, website, DM): ${esc(optinLink())}\n` +
+          `  Project klik → kirim username X → pasang kode di bio → otomatis aktif (menunggu verifikasi: ${Object.keys(db.pending).length}).`
+        : '• Atau biarkan project daftar sendiri lewat link opt-in 1-klik: nyalakan Opt-in publik di 🤖 Otomatis.'),
     rows: [[btn('➕ Opt-in manual', 'm:ask:optin'), btn('🗑 Hapus opt-in', 'm:ask:deloptin')], HOME]
   };
 }
@@ -1346,6 +1400,8 @@ function autoPanel() {
       `⏱ <b>Pantau tweet baru project opt-in: ${a.watchOptins ? 'ON' : 'OFF'}</b> (cek tiap ${a.watchIntervalMin} menit)\n` +
       'Tweet baru dari project opt-in langsung dikomentari, tanpa menunggu ada post di channel.\n\n' +
       `📢 <b>Baca channel publik: tiap ${a.webPollSec} detik</b>\nSeberapa sering bot membuka halaman web channel target.\n\n` +
+      `💬 <b>Komentar 1-tap (project belum opt-in): ${a.manualAssist ? 'ON' : 'OFF'}</b>\n` +
+      'Bot mencari tweet terbaru project &amp; menyiapkan komentarnya; Anda tinggal tekan 💬 di laporan lalu Reply di X. Memakai kuota baca API X.\n\n' +
       `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
       `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
       `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +
@@ -1354,6 +1410,7 @@ function autoPanel() {
       [btn(`Pantau tweet opt-in: ${a.watchOptins ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.watchOptins')],
       ...optionRows('⏱ Cek tweet baru opt-in tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], mnt),
       ...optionRows('📢 Baca channel publik tiap', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v} dtk`),
+      [btn(`Komentar 1-tap: ${a.manualAssist ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.manualAssist')],
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       ...optionRows('📊 Ringkasan harian jam', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
@@ -1368,7 +1425,7 @@ const SETTABLE = {
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
   'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
 };
-const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel };
+const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel };
 
 // Nama di console.x.com (nama lama di developer portal dalam kurung)
 const KEY_STEPS = ['Consumer Key (API Key)', 'Secret Key (API Key Secret)', 'Access Token', 'Access Token Secret'];

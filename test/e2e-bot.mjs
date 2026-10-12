@@ -37,7 +37,7 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
   channels: ['@alpha'],
   reportChat: REPORT,
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 },
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0 },
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, manualAssist: false },
   lastDaily: new Date().toDateString()
 }));
 
@@ -538,9 +538,21 @@ await test('opt-in publik bisa dinyalakan dari panel (menu publik ikut muncul), 
   assert.match(await dm(444, '/optin @OpenProj fourtis'), /FTS-[A-Z0-9]+/);
   assert.ok(db.pending.openproj);
   assert.match(await dm(444, '/status'), /Bot ini privat/); // perintah admin tetap tertutup
+  // Link opt-in 1-klik: tampil di panel Opt-in; project klik → kirim username → pilih brand → kode bio
+  const o = await tap(ADMIN, 'm:opt');
+  assert.match(o.text, /Link opt-in 1-klik<\/b>[^\n]*https:\/\/t\.me\/fourtisbot\?start=optin/);
+  assert.match(await dm(445, '/start optin'), /Kirim username X project kamu/);
+  assert.match(await dm(445, 'bukan-handle!!'), /Username X tidak valid/);
+  const r = await dm(445, '@LinkProj2');
+  if (/ke brand mana/.test(r)) await tap(445, 'optin:fourtis:linkproj2');
+  assert.match(messagesTo(445).at(-1), /Tambahkan kode <code>FTS-[A-Z0-9]+<\/code> ke bio X/);
+  assert.equal(db.pending.linkproj2.by, 445);
+  assert.match(await dm(445, 'halo lagi'), /Bot ini privat/); // setelah selesai, pesan biasa tidak diproses lagi
   await tap(ADMIN, 'm:tog:auto.publicOptin');
   assert.equal(db.auto.publicOptin, false);
-  delete db.pending.openproj;
+  assert.match((await tap(ADMIN, 'm:opt')).text, /nyalakan Opt-in publik/);
+  assert.match(await dm(446, '/start optin'), /Bot ini privat/); // opt-in publik OFF: link tidak bisa dipakai
+  delete db.pending.openproj; delete db.pending.linkproj2;
 });
 
 await test('BOT_TOKEN kosong → berhenti dengan pesan jelas (TG API tidak diminta)', async () => {
