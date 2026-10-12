@@ -8,7 +8,7 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
   ikut batas per jam/hari: **💬 = komentar + like + follow sekaligus** (1 tekan), ❤️ / 👤 = 1 aksi. Kalau X menolak komentar lewat API, tombolnya jadi **✍️ Balas di X** (lihat Catatan). Kalau OFF: hanya dilaporkan (tanpa kuota API X)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
-- Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
+- Setiap aksi dilaporkan ke **channel laporan**, termasuk hasil tombol: **✅ Aksi terkirim** (💬 komentar / ❤️ like / 👤 follow, ✅ atau ❌ + alasan, link komentar). Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 
 Semua pengaturan lewat bot Telegram — tidak ada website.

@@ -424,23 +424,41 @@ function actionRows(tid) {
 const busy = new Set();
 const meId = async (b) => (db.brands[b].userId ||= (await clients[b].v2.me()).data.id);
 // Like + follow ikut tekanan 💬 (aksi admin, bukan otomatis). Gagal di sini tidak membatalkan komentar;
-// limit X (429) like/follow tidak menjedakan akun (komentar tetap jalan)
+// limit X (429) like/follow tidak menjedakan akun (komentar tetap jalan).
+// Hasil per aksi: true = sukses, teks = alasan gagal, tidak ada = dilewati (sudah / lewat link X)
 async function likeAndFollow(m, b, tid) {
-  const done = [];
+  const res = {};
   for (const a of ['l', 'f']) {
-    if (m.done[`${a}:${b}`] || (a === 'f' && !m.authorId) || viaX(b, a) || !withinLimits(b)) continue;
+    if (m.done[`${a}:${b}`] || (a === 'f' && !m.authorId) || viaX(b, a)) continue;
+    if (!withinLimits(b)) { res[a] = 'batas akun tercapai'; continue; }
     try {
       if (a === 'l') await clients[b].v2.like(await meId(b), tid);
       else await clients[b].v2.follow(await meId(b), m.authorId);
       m.done[`${a}:${b}`] = Date.now();
       (db.sentAt[b] ||= []).push(Date.now());
-      done.push(a === 'l' ? '❤️ di-like' : '👤 di-follow');
+      res[a] = true;
     } catch (e) {
       console.error('like/follow:', e);
       if (e?.code === 403 && !/blocked/i.test(errText(e))) (db.brands[b].viaX ||= {})[a] = Date.now();
+      res[a] = e?.code === 429 ? 'limit X' : String(e?.data?.detail || e?.data?.title || e.message).slice(0, 80);
     }
   }
-  return done;
+  return res;
+}
+// Laporan ke channel setiap ada aksi tombol yang berhasil (komentar / like / follow)
+const RES_LABEL = { c: '💬 Komentar', l: '❤️ Like', f: '👤 Follow' };
+async function actionReport(m, b, tid, res) {
+  if (!Object.values(res).includes(true)) return;
+  const line = (a) => `${RES_LABEL[a]} ${res[a] === true ? '✅' : `❌ ${esc(res[a])}`}` +
+    (a === 'c' && res.c === true ? ` "${esc(m.texts[b])}"` : '');
+  await report(
+    `✅ <b>Aksi terkirim</b> · ${esc(brandLabel(b))}\nProject: <b>@${esc(m.username)}</b>\n` +
+    ['c', 'l', 'f'].filter((a) => a in res).map(line).join('\n'),
+    [[
+      Markup.button.url('🔗 Tweet', `https://x.com/${m.username}/status/${tid}`),
+      ...(res.c === true && m.replyId ? [Markup.button.url('🔗 Komentar', `https://x.com/i/status/${m.replyId}`)] : [])
+    ]]
+  );
 }
 bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   // Laporan bisa dilihat subscriber channel: hanya ADMIN_IDS yang boleh menekan
@@ -464,7 +482,7 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   if (!withinLimits(b)) return alert(`Batas akun ${brandName(b)} tercapai (${db.limits.maxPerHour}/jam, ${db.limits.maxPerDay}/hari). Ubah di /menu → Jeda & Batas.`);
   if (busy.has(tid + key)) return toast('Sedang diproses…');
   busy.add(tid + key);
-  let extra = [];
+  let res = {};
   try {
     const x = clients[b].v2;
     if (a === 'c') {
@@ -472,13 +490,18 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
         const { data } = await x.reply(m.texts[b], tid);
         m.replyId = data.id;
         stat('replies', b);
+        res.c = true;
       } catch (e) {
         if (!mentionOnlyErr(e)) throw e;
         (m.noApi ||= {})[b] = Date.now(); // tweet ini hanya bisa dibalas dari app X
+        res.c = 'X hanya mengizinkan lewat app X (✍️ Balas di X)';
       }
-      extra = await likeAndFollow(m, b, tid);
-    } else if (a === 'l') await x.like(await meId(b), tid);
-    else await x.follow(await meId(b), m.authorId);
+      Object.assign(res, await likeAndFollow(m, b, tid));
+    } else {
+      if (a === 'l') await x.like(await meId(b), tid);
+      else await x.follow(await meId(b), m.authorId);
+      res = { [a]: true };
+    }
   } catch (e) {
     console.error('aksi tombol:', e);
     // Like / Follow tidak diizinkan untuk app / paket API ini (bukan karena diblokir project)
@@ -494,15 +517,17 @@ bot.action(/^mx:([clf]):([a-z0-9_]+):(\d+)$/, async (ctx) => {
   } finally {
     busy.delete(tid + key);
   }
-  const more = extra.length ? ` · ${extra.join(', ')}` : '';
-  if (a === 'c' && m.noApi?.[b]) {
-    save(); await redraw();
-    return toast(`X hanya mengizinkan tweet ini dibalas dari app X: tekan ✍️ Balas di X · ${brandName(b)}, lalu Reply${more}`);
+  const extra = [res.l === true && '❤️ di-like', res.f === true && '👤 di-follow'].filter(Boolean);
+  const more = a === 'c' && extra.length ? ` · ${extra.join(', ')}` : '';
+  if (res[a] === true) {
+    (db.sentAt[b] ||= []).push(Date.now());
+    m.done[key] = Date.now();
   }
-  (db.sentAt[b] ||= []).push(Date.now());
-  m.done[key] = Date.now(); save();
-  await toast({ c: `✅ Komentar terkirim dari ${brandLabel(b)}${more}`, l: '✅ Di-like', f: `✅ @${m.username} di-follow` }[a]);
+  save();
+  if (res[a] === true) await toast({ c: `✅ Komentar terkirim dari ${brandLabel(b)}${more}`, l: '✅ Di-like', f: `✅ @${m.username} di-follow` }[a]);
+  else await toast(`X hanya mengizinkan tweet ini dibalas dari app X: tekan ✍️ Balas di X · ${brandName(b)}, lalu Reply${more}`);
   await redraw();
+  await actionReport(m, b, tid, res);
 });
 
 async function processProject(handle, channelName, t0, brand) {

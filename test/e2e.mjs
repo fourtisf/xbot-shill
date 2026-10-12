@@ -666,6 +666,9 @@ await test('komentar 1-tap: 💬 = komentar + like + follow; X menolak tweet ini
     assert.equal(kb[1][0].callback_data, `mx:c:dexvra:${tid}`); // Dexvra belum ditolak X: tetap 💬 Kirim
     assert.ok(!db.manual[tid].done['c:fourtis']);
     assert.ok(!db.brandDown.fourtis);
+    // Laporan ke channel: like & follow sukses, komentar lewat app X
+    const rep1 = await reportMatching('Project: <b>@TapMention</b>\n💬 Komentar ❌');
+    assert.match(rep1, /^✅ <b>Aksi terkirim<\/b> · Fourtis \(@fourtisbot\)\nProject: <b>@TapMention<\/b>\n💬 Komentar ❌ X hanya mengizinkan lewat app X \(✍️ Balas di X\)\n❤️ Like ✅\n👤 Follow ✅$/);
     // Tombol 💬 lama di tweet yang sama: tidak memanggil API lagi
     await tap(ADMIN, `mx:c:fourtis:${tid}`);
     assert.equal(xcalls('reply').length, replies + 1);
@@ -685,6 +688,12 @@ await test('komentar 1-tap: 💬 = komentar + like + follow; X menolak tweet ini
     assert.match(lastAnswer(), /✅ Komentar terkirim dari Fourtis[\s\S]*❤️ di-like$/);
     assert.ok(!db.pausedUntil.fourtis || db.pausedUntil.fourtis < Date.now());
     assert.deepEqual(lastEdit()[0].map((k) => k.text), ['✅ Terkirim · Fourtis', '✅ Liked · Fourtis', '👤 Follow · Fourtis']);
+    const rep2 = await reportMatching('Project: <b>@TapMentionTwo</b>\n💬 Komentar ✅');
+    assert.equal(rep2, `✅ <b>Aksi terkirim</b> · Fourtis (@fourtisbot)\nProject: <b>@TapMentionTwo</b>\n` +
+      `💬 Komentar ✅ "${db.manual[tid2].texts.fourtis}"\n❤️ Like ✅\n👤 Follow ❌ limit X`);
+    assert.deepEqual(keyboardOf(rep2)[0].map((k) => k.url), [
+      `https://x.com/TapMentionTwo/status/${tid2}`, `https://x.com/i/status/${db.manual[tid2].replyId}`
+    ]);
 
     // Like ditolak X lewat API (paket / izin app) → tombol jadi link ❤️ Like di X, tombol lama tidak memanggil API lagi
     M.x.failNext.like = xErr(403, 'You are not permitted to perform this action.');
@@ -701,8 +710,14 @@ await test('komentar 1-tap: 💬 = komentar + like + follow; X menolak tweet ini
     assert.equal(xcalls('follow').at(-1).at(-1), 'dk');
     // Diblokir project bukan batasan app: Follow tetap lewat API
     M.x.failNext.follow = xErr(403, 'You have been blocked from following this account.');
+    const reportsBefore = reports().length;
     await tap(ADMIN, `mx:f:fourtis:${tid2}`);
     assert.ok(!db.brands.fourtis.viaX?.f);
+    assert.equal(reports().length, reportsBefore); // gagal: tidak ada laporan sukses
+    // Follow saja (1 tekan) berhasil → laporan Follow ✅
+    await tap(ADMIN, `mx:f:fourtis:${tid2}`);
+    assert.equal(await reportMatching('Project: <b>@TapMentionTwo</b>\n👤 Follow ✅'),
+      '✅ <b>Aksi terkirim</b> · Fourtis (@fourtisbot)\nProject: <b>@TapMentionTwo</b>\n👤 Follow ✅');
     assert.ok(!db.brandDown.fourtis && !db.brandDown.dexvra);
   } finally {
     db.auto.manualAssist = false;
