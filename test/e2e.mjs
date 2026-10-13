@@ -595,7 +595,7 @@ await test('komentar 1-tap: project belum opt-in → komentar per brand + 📋 S
     M.x.timelines.u98 = [{ id: tid, text: 'we just launched v1', created_at: new Date().toISOString() }];
     const [replies, likes, follows] = ['reply', 'like', 'follow'].map((n) => xcalls(n).length);
     post(alpha, 'x.com/ManualProj');
-    const r = await reportMatching('<b>@ManualProj</b> belum opt-in — siap dikomentari');
+    const r = await reportMatching('<b>@ManualProj</b> siap dikomentari');
     assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"\nKomentar Fourtis: "([^"]*Manual Labs[^"]*)"\nKomentar Dexvra: "([^"]*Manual Labs[^"]*)"$/);
     assert.match(r, /Komentar Dexvra: "[^"]*"$/); // tanpa teks petunjuk
     const [, fourtis, dexvra] = r.match(/Komentar Fourtis: "([^"]*)"\nKomentar Dexvra: "([^"]*)"/);
@@ -649,14 +649,14 @@ await test('komentar 1-tap ON: hanya laporan "siap dikomentari"; kredit X habis 
     for (const n of ['CreditA', 'CreditB']) users[n.toLowerCase()] = user('u' + n, n, n);
     M.x.failNext.userByUsername = [xErr(402, 'credits depleted'), xErr(402, 'credits depleted')];
     post(alpha, 'x.com/CreditA');
-    await reportMatching('<b>@credita</b> belum opt-in — siap dikomentari');
+    await reportMatching('<b>@credita</b> siap dikomentari');
     post(alpha, 'x.com/CreditB');
-    await reportMatching('<b>@creditb</b> belum opt-in — siap dikomentari');
+    await reportMatching('<b>@creditb</b> siap dikomentari');
     await tick(3);
     const added = reports().slice(before);
     assert.equal(added.length, 3, added.join('\n---\n'));
     assert.match(added[0], /^⚠️ <b>Kredit X API habis<\/b> \(402 credits depleted\)/);
-    assert.match(added[1], /^💬 <b>@credita<\/b> belum opt-in — siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]*"\nKomentar Dexvra: "[^"]*"$/);
+    assert.match(added[1], /^💬 <b>@credita<\/b> siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]*"\nKomentar Dexvra: "[^"]*"$/);
     const kb = sent().find((m) => m.payload.text === added[2]).payload.reply_markup.inline_keyboard;
     assert.deepEqual(kb[1].map(({ text, url }) => ({ text, url })), [{ text: '👤 Profil X', url: 'https://x.com/creditb' }]);
   } finally {
@@ -670,8 +670,8 @@ await test('mode hemat: laporan siap dikomentari TANPA API X — 📋 Salin per 
   try {
     const calls = M.x.calls.length;
     post(alpha, 'x.com/FreeProj');
-    const r = await reportMatching('<b>@freeproj</b> belum opt-in — siap dikomentari');
-    assert.match(r, /^💬 <b>@freeproj<\/b> belum opt-in — siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]+"\nKomentar Dexvra: "[^"]+"$/);
+    const r = await reportMatching('<b>@freeproj</b> siap dikomentari');
+    assert.match(r, /^💬 <b>@freeproj<\/b> siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]+"\nKomentar Dexvra: "[^"]+"$/);
     assert.doesNotMatch(r, /Mode hemat/);
     const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard;
     assert.deepEqual(kb.map((row) => row.map((b) => b.text)), [['📋 Salin · Fourtis', '📋 Salin · Dexvra'], ['👤 Profil X']]);

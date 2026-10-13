@@ -370,7 +370,7 @@ function commentReport(handle, channelName, brands, { user, tweet } = {}) {
   save(); stat('manual');
   const multi = brands.length > 1;
   return report(
-    `💬 <b>@${esc(username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
+    `💬 <b>@${esc(username)}</b> siap dikomentari\nSumber: ${esc(channelName)}\n` +
     (tweet ? `Tweet: "${esc(tweet.text.slice(0, 90))}…"\n` : '') +
     brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n'),
     [
