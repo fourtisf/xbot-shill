@@ -333,9 +333,8 @@ async function notOptedIn(handle, channelName) {
   const rb = readerBrand();
   const brands = activeBrands().filter((b) => db.brands[b].templates.length);
   if (!db.auto.manualAssist || !brands.length) return plain();
-  const toProfile = (why) => commentReport(handle, channelName, brands, { why });
-  if (db.auto.freeMode) return toProfile('Mode hemat (tanpa API X)');
-  if (!rb || limited(rb)) return toProfile('Akun X sedang jeda (limit X)');
+  const toProfile = () => commentReport(handle, channelName, brands);
+  if (db.auto.freeMode || !rb || limited(rb)) return toProfile();
   try {
     const x = clients[rb];
     const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
@@ -354,13 +353,13 @@ async function notOptedIn(handle, channelName) {
       await reportOnce('x-credits', '⚠️ <b>Kredit X API habis</b> (402 credits depleted)\n' +
         'Bot tidak bisa mencari tweet terbaru: laporan memakai link 👤 Profil X sampai kredit diisi di console.x.com.', 6 * 3600_000);
     } else await xError(e, 'Siapkan komentar', rb); // sama per jenis error, maks. 1x per jam (bukan per project)
-    return toProfile(e?.code === 402 ? 'Kredit X API habis' : 'Tweet terbaru tidak bisa dicari');
+    return toProfile();
   }
 }
 // Laporan "siap dikomentari" project belum opt-in: komentar per brand (📋 Salin) + link ke tweet terbarunya, atau ke
 // profilnya kalau tweet tidak dicari (mode hemat: tanpa API X) / tidak bisa dicari (kredit habis, error X).
 // Reply, like & follow dilakukan admin di X — tidak ada aksi lewat API dari laporan ini
-function commentReport(handle, channelName, brands, { user, tweet, why } = {}) {
+function commentReport(handle, channelName, brands, { user, tweet } = {}) {
   const username = user?.username || handle;
   const vars = { name: user?.name || handle, handle: username, channel: channelName };
   const texts = Object.fromEntries(brands.map((b) => {
@@ -373,10 +372,7 @@ function commentReport(handle, channelName, brands, { user, tweet, why } = {}) {
   return report(
     `💬 <b>@${esc(username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
     (tweet ? `Tweet: "${esc(tweet.text.slice(0, 90))}…"\n` : '') +
-    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') + '\n<i>' +
-    (tweet ? '📋 Salin → 🔗 Tweet terbaru → Reply → tempel.'
-      : `${esc(why)}: 📋 Salin → 👤 Profil X → tweet teratas (bukan yang Pinned) → Reply → tempel.`) +
-    ' Like &amp; follow di X.</i>',
+    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n'),
     [
       brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
       tweet ? [
