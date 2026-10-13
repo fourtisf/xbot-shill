@@ -646,6 +646,32 @@ await test('komentar 1-tap: project belum opt-in → komentar disiapkan per bran
   }
 });
 
+await test('komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikomentari"; kredit X habis (402) → 1 peringatan, bukan per project', async () => {
+  db.auto.manualAssist = true;
+  try {
+    const before = reports().length;
+    // Tidak ada tweet baru / tidak ditemukan di X → tidak ada laporan
+    users.quietproj = user('u93', 'QuietProj', 'Quiet');
+    M.x.timelines.u93 = [];
+    post(alpha, 'x.com/QuietProj x.com/GhostProj');
+    await until(() => lookedUp('quietproj') && lookedUp('ghostproj'), 'QuietProj & GhostProj dicek di X');
+    await tick(3);
+    // Kredit X API habis untuk dua project → satu peringatan saja
+    for (const n of ['CreditA', 'CreditB']) users[n.toLowerCase()] = user('u' + n, n, n);
+    M.x.failNext.userByUsername = [xErr(402, 'credits depleted'), xErr(402, 'credits depleted')];
+    post(alpha, 'x.com/CreditA');
+    await reportMatching('Kredit X API habis');
+    post(alpha, 'x.com/CreditB');
+    await until(() => lookedUp('creditb'), 'CreditB dicek di X');
+    await tick(3);
+    const added = reports().slice(before);
+    assert.equal(added.length, 1, added.join('\n---\n'));
+    assert.match(added[0], /^⚠️ <b>Kredit X API habis<\/b> \(402 credits depleted\)/);
+  } finally {
+    db.auto.manualAssist = false;
+  }
+});
+
 await test('/optin dengan 2 brand → pilih tombol Dexvra → akun Dexvra yang komentar', async () => {
   users.brandproj = user('u26', 'BrandProj', 'Brand Project');
   M.x.timelines.u26 = [{ id: snow(now, 500), text: 'brand news', created_at: new Date().toISOString() }];

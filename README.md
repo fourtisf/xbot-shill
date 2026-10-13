@@ -5,7 +5,7 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
 - **Project belum opt-in** → bot TIDAK berkomentar sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis) bot mencari tweet terbarunya,
   menyiapkan komentar per brand, dan laporan berisi tombol **💬 Kirim · ❤️ Like · 👤 Follow** per brand: 1 tekan di Telegram = 1 aksi dari akun brand
-  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, pakai tombol ✍️ Ubah di X. Kalau OFF: hanya dilaporkan (tanpa kuota API X)
+  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, pakai tombol ✍️ Ubah di X. Project yang tidak bisa disiapkan (tidak ada tweet baru, error X) tidak dilaporkan, cukup di log; kredit X API habis (402) → 1 peringatan per 6 jam. Kalau OFF: setiap project hanya dilaporkan (tanpa kuota API X)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan

@@ -70,8 +70,8 @@ async function report(html, buttons) {
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
 const lastErr = new Map();
-async function reportOnce(sig, html) { // pesan yang sama maks. 1x per jam
-  if (Date.now() - (lastErr.get(sig) || 0) < 3600_000) return;
+async function reportOnce(sig, html, every = 3600_000) { // pesan yang sama maks. 1x per jam (atau per `every` ms)
+  if (Date.now() - (lastErr.get(sig) || 0) < every) return;
   lastErr.set(sig, Date.now());
   await report(html);
 }
@@ -325,17 +325,20 @@ function filterWhy(user) {
 async function notOptedIn(handle, channelName) {
   if (cooling(handle)) return;
   db.history[handle] = Date.now(); save();
-  const plain = (note = '') => report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari otomatis${note}\nSumber: ${esc(channelName)}`,
-    [[followBtn(handle)]]);
+  // Komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikomentari" — project yang tidak bisa disiapkan
+  // (tidak ada tweet baru, tidak ditemukan, di-skip filter, error X) cukup di log. OFF: setiap project dilaporkan
+  const plain = (note = '') => (db.auto.manualAssist
+    ? console.log(`@${handle} belum opt-in, tidak disiapkan${note}`)
+    : report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari otomatis${note}\nSumber: ${esc(channelName)}`, [[followBtn(handle)]]));
   const rb = readerBrand();
   const brands = activeBrands().filter((b) => db.brands[b].templates.length);
   if (!db.auto.manualAssist || !rb || limited(rb) || !brands.length) return plain();
   try {
     const x = clients[rb];
     const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
-    if (!user) return report(`⛔ <b>@${esc(handle)}</b> tidak ditemukan di X\nSumber: ${esc(channelName)}`);
+    if (!user) return plain(' (tidak ditemukan di X)');
     const why = filterWhy(user);
-    if (why) { stat('skipped'); return report(`⛔ <b>@${esc(handle)}</b> di-skip — ${esc(why)}\nSumber: ${esc(channelName)}`); }
+    if (why) { stat('skipped'); return plain(` (di-skip — ${why})`); }
     const tl = await x.v2.userTimeline(user.id, { max_results: 5, exclude: ['replies', 'retweets'], 'tweet.fields': ['created_at', 'reply_settings'] });
     const maxAge = db.filter.maxTweetAgeHours * 3600_000;
     const tw = (tl.tweets || []).filter((t) => Date.now() - new Date(t.created_at) < maxAge && canReplyTo(t, rb)).sort(newestFirst)[0];
@@ -359,8 +362,12 @@ async function notOptedIn(handle, channelName) {
     );
   } catch (e) {
     console.error(e);
-    await xError(e, `Siapkan komentar @${handle}`, rb);
-    return plain();
+    // Kredit X API habis: satu peringatan per 6 jam, bukan satu per project
+    if (e?.code === 402) {
+      await reportOnce('x-credits', '⚠️ <b>Kredit X API habis</b> (402 credits depleted)\n' +
+        'Bot tidak bisa membaca tweet project, jadi laporan "siap dikomentari" berhenti sampai kredit diisi di console.x.com.', 6 * 3600_000);
+    } else await xError(e, 'Siapkan komentar', rb); // sama per jenis error, maks. 1x per jam (bukan per project)
+    return plain(` (${e?.code ?? 'error'})`);
   }
 }
 // ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
