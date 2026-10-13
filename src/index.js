@@ -332,6 +332,7 @@ async function notOptedIn(handle, channelName) {
     : report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari otomatis${note}\nSumber: ${esc(channelName)}`, [[followBtn(handle)]]));
   const rb = readerBrand();
   const brands = activeBrands().filter((b) => db.brands[b].templates.length);
+  if (db.auto.manualAssist && db.auto.freeMode && brands.length) return freeReport(handle, channelName, brands);
   if (!db.auto.manualAssist || !rb || limited(rb) || !brands.length) return plain();
   try {
     const x = clients[rb];
@@ -370,6 +371,28 @@ async function notOptedIn(handle, channelName) {
     return plain(` (${e?.code ?? 'error'})`);
   }
 }
+// Mode hemat: tanpa API X (tidak memakai kredit). Tweet terbaru tidak dicari, jadi komentar disiapkan dari template
+// ({name} = handle) dan admin membuka profil project: tweet teratas → Reply → tempel; like & follow juga di X
+function freeReport(handle, channelName, brands) {
+  const vars = { name: handle, handle, channel: channelName };
+  const texts = Object.fromEntries(brands.map((b) => {
+    const tpl = pickTemplate(db.brands[b].templates, 'manual:' + b, false);
+    useTemplate('manual:' + b, tpl);
+    return [b, fill(tpl, vars)];
+  }));
+  save(); stat('manual');
+  const multi = brands.length > 1;
+  return report(
+    `💬 <b>@${esc(handle)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
+    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
+    '\n<i>Mode hemat (tanpa API X): 📋 Salin → 👤 Profil X → tweet teratas → Reply → tempel. Like &amp; follow di X.</i>',
+    [
+      brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
+      [Markup.button.url('👤 Profil X', `https://x.com/${handle}`)]
+    ]
+  );
+}
+
 // ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
 // Dipicu admin satu per satu (bukan otomatis — X melarang komentar/like/follow otomatis ke akun yang tidak minta).
 // 1 tekan = 1 aksi dari akun brand, ikut batas per jam/hari (Jeda & Batas). Tekan dua kali tidak dikirim dobel
@@ -1475,7 +1498,11 @@ function autoPanel() {
       'Tweet baru dari project opt-in langsung dikomentari, tanpa menunggu ada post di channel.\n\n' +
       `📢 <b>Baca channel publik: tiap ${a.webPollSec} detik</b>\nSeberapa sering bot membuka halaman web channel target.\n\n` +
       `💬 <b>Komentar 1-tap (project belum opt-in): ${a.manualAssist ? 'ON' : 'OFF'}</b>\n` +
-      'Bot mencari tweet terbaru project &amp; menyiapkan komentarnya; Anda tinggal tekan 💬 di laporan lalu Reply di X. Memakai kuota baca API X.\n\n' +
+      'Bot menyiapkan komentar untuk project yang muncul di channel.\n\n' +
+      `🆓 <b>Mode hemat (tanpa API X): ${a.freeMode ? 'ON' : 'OFF'}</b>\n` +
+      (a.freeMode
+        ? 'Gratis, tidak memakai kredit X: laporan berisi 📋 Salin + 👤 Profil X; reply, like &amp; follow dilakukan di X.'
+        : 'Bot mencari tweet terbaru project (memakai kredit X, 2 per project) + tombol 💬 Kirim · ❤️ Like · 👤 Follow.') + '\n\n' +
       `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
       `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
       `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +
@@ -1485,6 +1512,7 @@ function autoPanel() {
       ...optionRows('⏱ Cek tweet baru opt-in tiap', 'auto.watchIntervalMin', [5, 10, 15, 30], mnt),
       ...optionRows('📢 Baca channel publik tiap', 'auto.webPollSec', [15, 30, 60, 120], (v) => `${v} dtk`),
       [btn(`Komentar 1-tap: ${a.manualAssist ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.manualAssist')],
+      [btn(`Mode hemat (tanpa API X): ${a.freeMode ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.freeMode')],
       [btn(`Verifikasi otomatis: ${a.autoVerify ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.autoVerify')],
       [btn(`Opt-in publik (/optin project): ${a.publicOptin ? '✅ ON' : '❌ OFF'}`, 'm:tog:auto.publicOptin')],
       ...optionRows('📊 Ringkasan harian jam', 'auto.dailyReportHour', [7, 8, 9, 12], (v) => `${v}.00`),
@@ -1499,7 +1527,10 @@ const SETTABLE = {
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
   'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
 };
-const TOGGLE = { 'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel };
+const TOGGLE = {
+  'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel,
+  'auto.freeMode': autoPanel
+};
 
 // Nama di console.x.com (nama lama di developer portal dalam kurung)
 const KEY_STEPS = ['Consumer Key (API Key)', 'Secret Key (API Key Secret)', 'Access Token', 'Access Token Secret'];

@@ -83,7 +83,8 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
     { type: 'reply', handle: 'queuedproj', username: 'QueuedProj', name: 'Queued', channel: 'Alpha Calls', userId: 'uq', tweetId: '1700000000000000077', tweetText: 'queued news', at: now }
   ],
   limits: { minDelaySec: 0, maxDelaySec: 0, maxPerHour: 1000, maxPerDay: 1000 }, // test melakukan banyak aksi
-  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true, manualAssist: false },
+  auto: { catchUpMin: 1, watchIntervalMin: 1, verifyIntervalMin: 1, dailyReportHour: 23, replyGapMin: 0, publicOptin: true, manualAssist: false,
+    freeMode: false }, // test 1-tap memakai API X (cari tweet terbaru + tombol 💬 ❤️ 👤)
   lastDaily: new Date().toDateString()
 }));
 
@@ -669,6 +670,29 @@ await test('komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikome
     assert.match(added[0], /^⚠️ <b>Kredit X API habis<\/b> \(402 credits depleted\)/);
   } finally {
     db.auto.manualAssist = false;
+  }
+});
+
+await test('mode hemat: laporan siap dikomentari TANPA API X — 📋 Salin per brand + link profil, tanpa tombol 💬 ❤️ 👤', async () => {
+  db.auto.manualAssist = true;
+  db.auto.freeMode = true;
+  try {
+    const calls = M.x.calls.length;
+    post(alpha, 'x.com/FreeProj');
+    const r = await reportMatching('<b>@freeproj</b> belum opt-in — siap dikomentari');
+    assert.match(r, /^💬 <b>@freeproj<\/b> belum opt-in — siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]+"\nKomentar Dexvra: "[^"]+"\n/);
+    assert.match(r, /Mode hemat \(tanpa API X\): 📋 Salin → 👤 Profil X → tweet teratas → Reply → tempel/);
+    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard;
+    assert.deepEqual(kb.map((row) => row.map((b) => b.text)), [['📋 Salin · Fourtis', '📋 Salin · Dexvra'], ['👤 Profil X']]);
+    assert.equal(kb[0][0].copy_text.text, r.match(/Komentar Fourtis: "([^"]+)"/)[1]);
+    assert.equal(kb[1][0].url, 'https://x.com/freeproj');
+    assert.ok(kb.flat().every((b) => !b.callback_data)); // tidak ada tombol yang memakai API X
+    await tick(3);
+    // Tidak ada panggilan API X untuk laporan ini (yang tersisa hanya pantauan tweet project opt-in di test)
+    assert.deepEqual(M.x.calls.slice(calls).filter((c) => c[0] !== 'search'), []);
+  } finally {
+    db.auto.manualAssist = false;
+    db.auto.freeMode = false;
   }
 });
 
