@@ -3,12 +3,12 @@
 Bot Telegram yang memantau channel target. Setiap ada post dengan link X project:
 
 - **Project opt-in** → akun X bot otomatis komentar di tweet terbaru project itu (realtime, dengan jeda aman)
-- **Project belum opt-in** → bot TIDAK berkomentar sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis) bot mencari tweet terbarunya,
-  menyiapkan komentar per brand, dan laporan berisi tombol **💬 Kirim · ❤️ Like · 👤 Follow** per brand: 1 tekan di Telegram = 1 aksi dari akun brand
-  (tanpa buka app X), ikut batas per jam/hari. Kalau X menolak komentar lewat API, pakai tombol ✍️ Ubah di X. Project yang tidak bisa disiapkan (tidak ada tweet baru, error X) tidak dilaporkan, cukup di log; kredit X API habis (402) → 1 peringatan per 6 jam. Kalau OFF: setiap project hanya dilaporkan (tanpa kuota API X)
-- **Mode hemat** (ON bawaan, /menu → Otomatis, `/auto freeMode`): laporan project belum opt-in disiapkan **tanpa API X**
-  (gratis, tidak memakai kredit): komentar per brand dengan tombol **📋 Salin** + **👤 Profil X**; reply, like & follow dilakukan di X
-  (tweet teratas → Reply → tempel). OFF = bot mencari tweet terbaru (2 kredit per project) + tombol 💬 ❤️ 👤 dari Telegram
+- **Project belum opt-in** → bot TIDAK berkomentar, like atau follow sendiri (aturan X). Dengan **Komentar 1-tap** (ON bawaan, /menu → Otomatis)
+  laporan berisi komentar per brand dengan tombol **📋 Salin**; reply, like & follow dilakukan admin di X (Salin → buka tweet → Reply → tempel):
+  - **Mode hemat ON** (bawaan, `/auto freeMode`): tanpa API X, gratis → tombol **👤 Profil X** (buka tweet teratas, bukan yang Pinned)
+  - **Mode hemat OFF**: bot mencari tweet terbarunya lewat API X (±2 kredit per project) → tombol **🔗 Tweet terbaru** + ✍️ Ubah di X (PC).
+    Kredit habis (402) / error X → laporan otomatis memakai 👤 Profil X; kredit habis diberi 1 peringatan per 6 jam
+  - Project yang tidak bisa disiapkan (tidak ada tweet baru, tidak ditemukan) tidak dilaporkan, cukup di log. Kalau 1-tap OFF: setiap project hanya dilaporkan
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan

@@ -332,8 +332,10 @@ async function notOptedIn(handle, channelName) {
     : report(`ℹ️ <b>@${esc(handle)}</b> belum opt-in — tidak dikomentari otomatis${note}\nSumber: ${esc(channelName)}`, [[followBtn(handle)]]));
   const rb = readerBrand();
   const brands = activeBrands().filter((b) => db.brands[b].templates.length);
-  if (db.auto.manualAssist && db.auto.freeMode && brands.length) return freeReport(handle, channelName, brands);
-  if (!db.auto.manualAssist || !rb || limited(rb) || !brands.length) return plain();
+  if (!db.auto.manualAssist || !brands.length) return plain();
+  const toProfile = (why) => commentReport(handle, channelName, brands, { why });
+  if (db.auto.freeMode) return toProfile('Mode hemat (tanpa API X)');
+  if (!rb || limited(rb)) return toProfile('Akun X sedang jeda (limit X)');
   try {
     const x = clients[rb];
     const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
@@ -344,37 +346,23 @@ async function notOptedIn(handle, channelName) {
     const maxAge = db.filter.maxTweetAgeHours * 3600_000;
     const tw = (tl.tweets || []).filter((t) => Date.now() - new Date(t.created_at) < maxAge && canReplyTo(t, rb)).sort(newestFirst)[0];
     if (!tw) return plain(` (tidak ada tweet baru ≤ ${db.filter.maxTweetAgeHours} jam)`);
-    const vars = { name: user.name, handle: user.username, channel: channelName };
-    const texts = {};
-    for (const b of brands) {
-      const tpl = pickTemplate(db.brands[b].templates, 'manual:' + b, false);
-      useTemplate('manual:' + b, tpl);
-      texts[b] = fill(tpl, vars);
-    }
-    db.manual[tw.id] = { username: user.username, authorId: user.id, at: Date.now(), brands, texts, done: {} }; save();
-    stat('manual');
-    return report(
-      `💬 <b>@${esc(user.username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
-      `Tweet: "${esc(tw.text.slice(0, 90))}…"\n` +
-      brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
-      '\n<i>Tekan tombol: 1 tekan = 1 aksi dari akun brand itu (tanpa buka app X), ikut batas per jam/hari.\n' +
-      'Kirim ditolak X? Di HP: 📋 Salin → 🔗 Tweet → Reply → tempel.</i>',
-      actionRows(tw.id)
-    );
+    return commentReport(handle, channelName, brands, { user, tweet: tw });
   } catch (e) {
     console.error(e);
-    // Kredit X API habis: satu peringatan per 6 jam, bukan satu per project
+    // Kredit X API habis: satu peringatan per 6 jam (bukan per project); laporan tetap jalan dengan link profil
     if (e?.code === 402) {
       await reportOnce('x-credits', '⚠️ <b>Kredit X API habis</b> (402 credits depleted)\n' +
-        'Bot tidak bisa membaca tweet project, jadi laporan "siap dikomentari" berhenti sampai kredit diisi di console.x.com.', 6 * 3600_000);
+        'Bot tidak bisa mencari tweet terbaru: laporan memakai link 👤 Profil X sampai kredit diisi di console.x.com.', 6 * 3600_000);
     } else await xError(e, 'Siapkan komentar', rb); // sama per jenis error, maks. 1x per jam (bukan per project)
-    return plain(` (${e?.code ?? 'error'})`);
+    return toProfile(e?.code === 402 ? 'Kredit X API habis' : 'Tweet terbaru tidak bisa dicari');
   }
 }
-// Mode hemat: tanpa API X (tidak memakai kredit). Tweet terbaru tidak dicari, jadi komentar disiapkan dari template
-// ({name} = handle) dan admin membuka profil project: tweet teratas → Reply → tempel; like & follow juga di X
-function freeReport(handle, channelName, brands) {
-  const vars = { name: handle, handle, channel: channelName };
+// Laporan "siap dikomentari" project belum opt-in: komentar per brand (📋 Salin) + link ke tweet terbarunya, atau ke
+// profilnya kalau tweet tidak dicari (mode hemat: tanpa API X) / tidak bisa dicari (kredit habis, error X).
+// Reply, like & follow dilakukan admin di X — tidak ada aksi lewat API dari laporan ini
+function commentReport(handle, channelName, brands, { user, tweet, why } = {}) {
+  const username = user?.username || handle;
+  const vars = { name: user?.name || handle, handle: username, channel: channelName };
   const texts = Object.fromEntries(brands.map((b) => {
     const tpl = pickTemplate(db.brands[b].templates, 'manual:' + b, false);
     useTemplate('manual:' + b, tpl);
@@ -383,12 +371,19 @@ function freeReport(handle, channelName, brands) {
   save(); stat('manual');
   const multi = brands.length > 1;
   return report(
-    `💬 <b>@${esc(handle)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
-    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') +
-    '\n<i>Mode hemat (tanpa API X): 📋 Salin → 👤 Profil X → tweet teratas → Reply → tempel. Like &amp; follow di X.</i>',
+    `💬 <b>@${esc(username)}</b> belum opt-in — siap dikomentari\nSumber: ${esc(channelName)}\n` +
+    (tweet ? `Tweet: "${esc(tweet.text.slice(0, 90))}…"\n` : '') +
+    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n') + '\n<i>' +
+    (tweet ? '📋 Salin → 🔗 Tweet terbaru → Reply → tempel.'
+      : `${esc(why)}: 📋 Salin → 👤 Profil X → tweet teratas (bukan yang Pinned) → Reply → tempel.`) +
+    ' Like &amp; follow di X.</i>',
     [
       brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
-      [Markup.button.url('👤 Profil X', `https://x.com/${handle}`)]
+      tweet ? [
+        // Link intent hanya jadi reply di browser PC (app X di HP membukanya sebagai postingan baru)
+        Markup.button.url('✍️ Ubah di X (PC)', `https://x.com/intent/tweet?in_reply_to=${tweet.id}&text=${encodeURIComponent(texts[brands[0]])}`),
+        Markup.button.url('🔗 Tweet terbaru', `https://x.com/${username}/status/${tweet.id}`)
+      ] : [Markup.button.url('👤 Profil X', `https://x.com/${username}`)]
     ]
   );
 }
@@ -1502,7 +1497,8 @@ function autoPanel() {
       `🆓 <b>Mode hemat (tanpa API X): ${a.freeMode ? 'ON' : 'OFF'}</b>\n` +
       (a.freeMode
         ? 'Gratis, tidak memakai kredit X: laporan berisi 📋 Salin + 👤 Profil X; reply, like &amp; follow dilakukan di X.'
-        : 'Bot mencari tweet terbaru project (memakai kredit X, 2 per project) + tombol 💬 Kirim · ❤️ Like · 👤 Follow.') + '\n\n' +
+        : 'Bot mencari tweet terbaru project (memakai kredit X, ±2 per project): laporan berisi 📋 Salin + 🔗 Tweet terbaru. ' +
+          'Kredit habis / error X → otomatis link 👤 Profil X.') + '\n\n' +
       `✅ <b>Verifikasi opt-in otomatis: ${a.autoVerify ? 'ON' : 'OFF'}</b>\nBot mengecek sendiri kode opt-in di bio project.\n\n` +
       `📊 <b>Ringkasan harian + backup: jam ${a.dailyReportHour}.00</b>\n\n` +
       `🔓 <b>Opt-in publik: ${a.publicOptin ? 'ON' : 'OFF'}</b>\n` +

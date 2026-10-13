@@ -587,67 +587,54 @@ await test('channel tanpa brand: project opt-in dikomentari akun brand pilihanny
   assert.equal(repliesTo(t).length, 1);
 });
 
-await test('komentar 1-tap: project belum opt-in → komentar disiapkan per brand (admin yang kirim), bot sendiri tidak berkomentar', async () => {
+await test('komentar 1-tap: project belum opt-in → komentar per brand + 📋 Salin + 🔗 Tweet terbaru; bot sendiri tidak beraksi di X', async () => {
   db.auto.manualAssist = true;
   try {
     users.manualproj = user('u98', 'ManualProj', 'Manual Labs');
     const tid = snow(Date.now(), 990);
     M.x.timelines.u98 = [{ id: tid, text: 'we just launched v1', created_at: new Date().toISOString() }];
+    const [replies, likes, follows] = ['reply', 'like', 'follow'].map((n) => xcalls(n).length);
     post(alpha, 'x.com/ManualProj');
     const r = await reportMatching('<b>@ManualProj</b> belum opt-in — siap dikomentari');
-    assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"\nKomentar Fourtis: "[^"]*Manual Labs[^"]*"\nKomentar Dexvra: "[^"]*Manual Labs/);
-    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard;
-    assert.deepEqual(kb.slice(0, 2).map((row) => row.map((b) => b.callback_data)), [
-      [`mx:c:fourtis:${tid}`, `mx:l:fourtis:${tid}`, `mx:f:fourtis:${tid}`],
-      [`mx:c:dexvra:${tid}`, `mx:l:dexvra:${tid}`, `mx:f:dexvra:${tid}`]
+    assert.match(r, /Sumber: Alpha Calls\nTweet: "we just launched v1…"\nKomentar Fourtis: "([^"]*Manual Labs[^"]*)"\nKomentar Dexvra: "([^"]*Manual Labs[^"]*)"\n/);
+    assert.match(r, /<i>📋 Salin → 🔗 Tweet terbaru → Reply → tempel\. Like &amp; follow di X\.<\/i>$/);
+    const [, fourtis, dexvra] = r.match(/Komentar Fourtis: "([^"]*)"\nKomentar Dexvra: "([^"]*)"/);
+    const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard
+      .map((row) => row.map(({ text, url, copy_text }) => (url ? { text, url } : { text, copy_text })));
+    assert.deepEqual(kb, [
+      [{ text: '📋 Salin · Fourtis', copy_text: { text: fourtis } }, { text: '📋 Salin · Dexvra', copy_text: { text: dexvra } }],
+      [
+        { text: '✍️ Ubah di X (PC)', url: `https://x.com/intent/tweet?in_reply_to=${tid}&text=${encodeURIComponent(fourtis)}` },
+        { text: '🔗 Tweet terbaru', url: `https://x.com/ManualProj/status/${tid}` }
+      ]
     ]);
-    // 📋 Salin per brand (HP: tempel di Reply tweet), ✍️ Ubah di X (PC)
-    assert.deepEqual(kb[2], [
-      { text: '📋 Salin · Fourtis', copy_text: { text: db.manual[tid].texts.fourtis } },
-      { text: '📋 Salin · Dexvra', copy_text: { text: db.manual[tid].texts.dexvra } }
-    ]);
-    assert.match(r, /Di HP: 📋 Salin → 🔗 Tweet → Reply → tempel/);
-    assert.equal(kb[3][0].text, '✍️ Ubah di X (PC)');
-    assert.equal(new URL(kb[3][0].url).searchParams.get('in_reply_to'), tid);
-    assert.equal(kb[3][1].url, `https://x.com/ManualProj/status/${tid}`);
     await tick(3);
-    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0); // tanpa tombol ditekan: bot TIDAK berkomentar
-
-    // Bukan admin (subscriber channel laporan) tidak bisa menekan
-    await tap(555, `mx:c:fourtis:${tid}`);
-    assert.equal(xcalls('reply').filter((c) => c[2] === tid).length, 0);
-    // Admin tekan 💬 Fourtis → 1 komentar dari akun Fourtis; tekan lagi → tidak dobel
-    const text = db.manual[tid].texts.fourtis;
-    await tap(ADMIN, `mx:c:fourtis:${tid}`);
-    await tap(ADMIN, `mx:c:fourtis:${tid}`);
-    assert.deepEqual(xcalls('reply').filter((c) => c[2] === tid).map((c) => [c[1], c.at(-1)]), [[text, 'k']]);
-    const edit = M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
-    assert.equal(edit[0][0].text, '✅ Terkirim · Fourtis');
-    assert.deepEqual(edit[2].map((b) => b.text), ['📋 Salin · Dexvra']); // komentar Fourtis sudah terkirim: tidak perlu disalin
-    // ❤️ Like & 👤 Follow dari akun Dexvra
-    await tap(ADMIN, `mx:l:dexvra:${tid}`);
-    await tap(ADMIN, `mx:f:dexvra:${tid}`);
-    assert.deepEqual(xcalls('like').at(-1).slice(1), [db.brands.dexvra.userId || 'dk', tid, 'dk']);
-    assert.deepEqual(xcalls('follow').at(-1).slice(1, 3), [db.brands.dexvra.userId || 'dk', 'u98']);
-    // X menolak komentar API (project belum pernah berinteraksi) → penjelasan, tidak ditandai terkirim
-    M.x.failNext.reply = xErr(403, 'Reply to this conversation is not allowed because you have not been mentioned or otherwise engaged by the author of the post you are replying to.');
-    await tap(ADMIN, `mx:c:dexvra:${tid}`);
-    assert.match(M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text, /X menolak komentar lewat API/);
-    assert.ok(!db.manual[tid].done['c:dexvra']);
-    assert.ok(!db.brandDown.dexvra);
-    // Batas per jam akun tercapai → ditolak dengan penjelasan
-    const hour = db.limits.maxPerHour;
-    db.limits.maxPerHour = 0;
-    await tap(ADMIN, `mx:c:dexvra:${tid}`);
-    db.limits.maxPerHour = hour;
-    assert.match(M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text, /Batas akun Dexvra tercapai/);
-    assert.equal(xcalls('reply').filter((c) => c[2] === tid && c.at(-1) === 'dk').length, 1); // hanya percobaan yang ditolak X
+    // Tidak ada komentar / like / follow lewat API dari laporan ini
+    assert.deepEqual(['reply', 'like', 'follow'].map((n) => xcalls(n).length), [replies, likes, follows]);
   } finally {
     db.auto.manualAssist = false;
   }
 });
 
-await test('komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikomentari"; kredit X habis (402) → 1 peringatan, bukan per project', async () => {
+await test('tombol ❤️ / 👤 di laporan komentar opt-in: hanya admin, 1 tekan = 1 aksi, tidak dobel, ikut batas akun', async () => {
+  const tid = '1700000000000000001'; // laporan "Komentar terkirim" @OptProj
+  await tap(555, `mx:l:fourtis:${tid}`); // bukan admin
+  assert.equal(xcalls('like').length, 0);
+  await tap(ADMIN, `mx:l:fourtis:${tid}`);
+  await tap(ADMIN, `mx:l:fourtis:${tid}`);
+  assert.deepEqual(xcalls('like').map((c) => [c[2], c.at(-1)]), [[tid, 'k']]);
+  const edit = M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
+  assert.equal(edit[0][0].text, '✅ Liked');
+  const hour = db.limits.maxPerHour;
+  db.limits.maxPerHour = 0;
+  await tap(ADMIN, `mx:f:fourtis:${tid}`);
+  db.limits.maxPerHour = hour;
+  assert.match(M.botCalls.filter((c) => c.method === 'answerCallbackQuery').at(-1).payload.text, /Batas akun Fourtis tercapai/);
+  await tap(ADMIN, `mx:f:fourtis:${tid}`);
+  assert.equal(xcalls('follow').at(-1)[2], 'u1');
+});
+
+await test('komentar 1-tap ON: hanya laporan "siap dikomentari"; kredit X habis (402) → 1 peringatan + laporan dengan link Profil X', async () => {
   db.auto.manualAssist = true;
   try {
     const before = reports().length;
@@ -657,17 +644,21 @@ await test('komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikome
     post(alpha, 'x.com/QuietProj x.com/GhostProj');
     await until(() => lookedUp('quietproj') && lookedUp('ghostproj'), 'QuietProj & GhostProj dicek di X');
     await tick(3);
-    // Kredit X API habis untuk dua project → satu peringatan saja
+    assert.equal(reports().length, before);
+    // Kredit X API habis untuk dua project → satu peringatan saja; laporan tetap ada, dengan link profil
     for (const n of ['CreditA', 'CreditB']) users[n.toLowerCase()] = user('u' + n, n, n);
     M.x.failNext.userByUsername = [xErr(402, 'credits depleted'), xErr(402, 'credits depleted')];
     post(alpha, 'x.com/CreditA');
-    await reportMatching('Kredit X API habis');
+    await reportMatching('<b>@credita</b> belum opt-in — siap dikomentari');
     post(alpha, 'x.com/CreditB');
-    await until(() => lookedUp('creditb'), 'CreditB dicek di X');
+    await reportMatching('<b>@creditb</b> belum opt-in — siap dikomentari');
     await tick(3);
     const added = reports().slice(before);
-    assert.equal(added.length, 1, added.join('\n---\n'));
+    assert.equal(added.length, 3, added.join('\n---\n'));
     assert.match(added[0], /^⚠️ <b>Kredit X API habis<\/b> \(402 credits depleted\)/);
+    assert.match(added[1], /<i>Kredit X API habis: 📋 Salin → 👤 Profil X → tweet teratas \(bukan yang Pinned\) → Reply → tempel/);
+    const kb = sent().find((m) => m.payload.text === added[2]).payload.reply_markup.inline_keyboard;
+    assert.deepEqual(kb[1].map(({ text, url }) => ({ text, url })), [{ text: '👤 Profil X', url: 'https://x.com/creditb' }]);
   } finally {
     db.auto.manualAssist = false;
   }
@@ -681,7 +672,7 @@ await test('mode hemat: laporan siap dikomentari TANPA API X — 📋 Salin per 
     post(alpha, 'x.com/FreeProj');
     const r = await reportMatching('<b>@freeproj</b> belum opt-in — siap dikomentari');
     assert.match(r, /^💬 <b>@freeproj<\/b> belum opt-in — siap dikomentari\nSumber: Alpha Calls\nKomentar Fourtis: "[^"]+"\nKomentar Dexvra: "[^"]+"\n/);
-    assert.match(r, /Mode hemat \(tanpa API X\): 📋 Salin → 👤 Profil X → tweet teratas → Reply → tempel/);
+    assert.match(r, /Mode hemat \(tanpa API X\): 📋 Salin → 👤 Profil X → tweet teratas \(bukan yang Pinned\) → Reply → tempel/);
     const kb = sent().find((m) => m.payload.text === r).payload.reply_markup.inline_keyboard;
     assert.deepEqual(kb.map((row) => row.map((b) => b.text)), [['📋 Salin · Fourtis', '📋 Salin · Dexvra'], ['👤 Profil X']]);
     assert.equal(kb[0][0].copy_text.text, r.match(/Komentar Fourtis: "([^"]+)"/)[1]);

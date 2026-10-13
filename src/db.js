@@ -60,7 +60,8 @@ const defaults = {
     webPollSec: 30, // baca halaman web channel publik (t.me/s/…) tiap N detik
     manualAssist: true, // project belum opt-in: siapkan komentar 1-tap (admin yang menekan kirim di X)
     // Mode hemat: komentar project belum opt-in disiapkan TANPA API X (gratis, tidak memakai kredit): laporan berisi
-    // tombol 📋 Salin + link profil project; reply / like / follow dilakukan di X. OFF = cari tweet terbaru + tombol 💬 ❤️ 👤
+    // tombol 📋 Salin + link profil project; reply / like / follow dilakukan di X. OFF = cari tweet terbaru lewat API X
+    // (memakai kredit) → link 🔗 Tweet terbaru
     freeMode: true,
     catchUpMin: 5, // ambil post channel yang terlewat (bot mati / koneksi putus)
     catchUpMaxAgeHours: 6,
