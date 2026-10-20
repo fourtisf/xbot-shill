@@ -710,11 +710,12 @@ async function tgInfo(link) {
   const extra = text(/<div class="tgme_page_extra"[^>]*>([\s\S]*?)<\/div>/);
   const og = unescapeHtml(/<meta property="og:title" content="([^"]*)"/.exec(html)?.[1] || '');
   const kind = /\b(members?|online)\b/i.test(extra) ? 'group' : /\b(subscribers?|followers?)\b/i.test(extra) ? 'channel' : null;
-  if (kind) return { title: title || og, kind, count: /(\d[\d\s.,]*?)\s*(?:members?|subscribers?|followers?)\b/i.exec(extra)?.[1] };
-  // Tanpa jumlah anggota: akun pribadi / bot (extra = @username) atau halaman "tidak ada" ("Telegram: Contact @nama").
-  // Selain itu (mis. channel yang menyembunyikan jumlah subscriber) tetap dilaporkan
-  if (!title || /^@\w+$/.test(extra) || /^Telegram: |right away/i.test(`${og}\n${title}`)) return null;
-  return { title };
+  const name = title || og; // og:title (pratinjau link) sebagai cadangan kalau tampilan halaman t.me berubah
+  if (kind) return { title: name, kind, count: /(\d[\d\s.,]*?)\s*(?:members?|subscribers?|followers?)\b/i.exec(extra)?.[1] };
+  // Tanpa jumlah anggota: akun pribadi / bot (extra = @username) atau halaman "tidak ada" ("Telegram: Contact @nama",
+  // undangan kedaluwarsa). Selain itu (mis. channel yang menyembunyikan jumlah subscriber) tetap dilaporkan
+  if (!name || /^@\w+$/.test(extra) || /^Telegram: |^Join group chat|right away/i.test(`${og}\n${title}`)) return null;
+  return { title: name };
 }
 const tgTemplates = (b) => (db.brands[b].tgTemplates?.length ? db.brands[b].tgTemplates : db.brands[b].templates);
 // Brand yang punya akun X atau template Telegram sendiri (akun X tidak dipakai: komentar ditempel admin di Telegram)
