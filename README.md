@@ -99,7 +99,7 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
 | Antrian tersimpan | Restart / VPS reboot tidak menghilangkan antrian |
 | Cek channel | Bot lapor channel yang belum terbaca (privat / username salah) dan lapor lagi begitu terbaca. Bot dijadikan admin di channel yang tadinya dibaca lewat web → langsung pindah ke jalur bot (instan), tanpa dobel |
-| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`), 24 jam terakhir: jumlah project **siap dikomentari** di channel X & jumlah grup di channel Telegram (+ sumber teratas), komentar, skip, opt-in, error, status akun X. Channel Telegram mendapat ringkasannya sendiri. Kapan saja: `/laporan` atau /menu → 📈 Laporan 24 jam |
+| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`), 24 jam terakhir. Tiap channel hanya angkanya sendiri: channel laporan → total project X **siap dikomentari** (+ sumber teratas), komentar, skip, opt-in, error, status akun X; channel Telegram → total grup/channel Telegram (+ sumber teratas). Kapan saja: `/laporan` atau /menu → 📈 Laporan 24 jam |
 | Backup | `data.json` di-backup harian ke `backups/` (7 terakhir); kalau `data.json` rusak, dipulihkan sendiri dari backup |
 | Restart | pm2 menyalakan ulang bot kalau crash atau VPS reboot |
 

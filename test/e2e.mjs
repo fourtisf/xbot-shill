@@ -941,10 +941,11 @@ await test('ringkasan harian + backup otomatis', async () => {
   db.lastDaily = null;
   const r = await reportMatching('Ringkasan harian');
   assert.match(r, /Komentar terkirim dari akun X: \d+/);
-  // Jumlah "siap dikomentari" 24 jam per channel: channel laporan X → X di atas, channel Telegram → Telegram di atas
-  assert.match(r, /\(24 jam terakhir\)\n🐦 <b>Channel X<\/b>: [1-9]\d* project siap dikomentari\nSumber: [^\n]+\n💬 <b>Channel Telegram<\/b>: 1 grup\/channel siap dikomentari \(👥 1 grup · 📢 0 channel\)\nSumber: Alpha Calls 1\n/);
+  // Tiap channel hanya jumlahnya sendiri: channel laporan → total X saja, channel Telegram → total Telegram saja
+  assert.match(r, /\(24 jam terakhir\)\n🐦 <b>Channel X<\/b>: [1-9]\d* project siap dikomentari\nSumber: [^\n]+\n\nKomentar terkirim/);
+  assert.doesNotMatch(r, /Channel Telegram/);
   const tg = messagesTo(db.tgReportChat).find((t) => t.includes('Ringkasan harian'));
-  assert.match(tg, /\(24 jam terakhir\)\n💬 <b>Channel Telegram<\/b>: 1 grup\/channel[^\n]*\nSumber: Alpha Calls 1\n🐦 <b>Channel X<\/b>: [1-9]/);
+  assert.equal(tg, '📊 <b>Ringkasan harian</b> (24 jam terakhir)\n💬 <b>Channel Telegram</b>: 1 grup/channel siap dikomentari (👥 1 grup · 📢 0 channel)\nSumber: Alpha Calls 1');
   assert.match(r, /Fourtis: ✅ @fourtisbot/);
   assert.match(r, /Dexvra: /);
   const backups = fs.readdirSync(path.join(tmp, 'backups'));

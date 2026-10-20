@@ -84,20 +84,19 @@ function topSources(rows, n = 5) {
   const top = [...count].sort((a, b) => b[1] - a[1]);
   return top.slice(0, n).map(([src, k]) => `${esc(src)} ${k}`).join(' · ') + (top.length > n ? ` · +${top.length - n} lainnya` : '');
 }
-// Dua baris (channel X & channel Telegram), channel `first` di atas
-function dayCounts(first = 'x') {
-  const rows = db.sentLog.filter((r) => r.at > Date.now() - DAY);
-  const x = rows.filter((r) => r.ch === 'x'), tg = rows.filter((r) => r.ch === 'tg');
-  const kinds = (k) => tg.filter((r) => r.kind === k).length;
-  const lines = {
-    x: `🐦 <b>Channel X</b>: ${x.length} project siap dikomentari` + (x.length ? `\nSumber: ${topSources(x)}` : ''),
-    tg: '💬 <b>Channel Telegram</b>: ' + (!db.tgReportChat && !tg.length ? 'belum diatur (/menu → 💬 Channel Telegram)'
-      : `${tg.length} grup/channel siap dikomentari` +
-        (tg.length ? ` (👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel)\nSumber: ${topSources(tg)}` : ''))
-  };
-  return first === 'tg' ? `${lines.tg}\n${lines.x}` : `${lines.x}\n${lines.tg}`;
+// Jumlah satu channel saja ('x' atau 'tg'): tiap channel hanya melihat angkanya sendiri
+function dayCount(ch) {
+  const rows = db.sentLog.filter((r) => r.at > Date.now() - DAY && r.ch === ch);
+  const src = rows.length ? `\nSumber: ${topSources(rows)}` : '';
+  if (ch === 'x') return `🐦 <b>Channel X</b>: ${rows.length} project siap dikomentari${src}`;
+  if (!db.tgReportChat && !rows.length) return '💬 <b>Channel Telegram</b>: belum diatur (/menu → 💬 Channel Telegram)';
+  const kinds = (k) => rows.filter((r) => r.kind === k).length;
+  return `💬 <b>Channel Telegram</b>: ${rows.length} grup/channel siap dikomentari` +
+    (rows.length ? ` (👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel)` : '') + src;
 }
-const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nJumlah laporan "siap dikomentari" yang terkirim ke tiap channel.\n\n${dayCounts()}`;
+// DM admin (/laporan): kedua channel, masing-masing terpisah
+const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nJumlah laporan "siap dikomentari" yang terkirim ke tiap channel.\n\n` +
+  `${dayCount('x')}\n\n${dayCount('tg')}`;
 
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
@@ -1016,11 +1015,11 @@ async function dailyTasks() {
   const s = db.stats;
   const perBrand = await Promise.all(Object.keys(db.brands).map(async (b) =>
     `${esc(brandName(b))}: ${esc(await accountStatus(b))} · ${s[`replies:${b}`] || 0} komentar`));
-  // Tiap channel mendapat ringkasannya sendiri: jumlah channel itu di atas, channel lainnya di bawah
+  // Tiap channel hanya mendapat jumlahnya sendiri: channel Telegram → total Telegram, channel laporan → total X
   const head = '📊 <b>Ringkasan harian</b> (24 jam terakhir)\n';
-  if (db.tgReportChat) await sendTo(db.tgReportChat, head + dayCounts('tg'));
+  if (db.tgReportChat) await sendTo(db.tgReportChat, head + dayCount('tg'));
   await report(
-    `${head}${dayCounts('x')}\n\nKomentar terkirim dari akun X: ${s.replies || 0}\n` +
+    `${head}${dayCount('x')}\n\nKomentar terkirim dari akun X: ${s.replies || 0}\n` +
     `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n\n` +
     `<b>Akun X</b>\n${perBrand.join('\n')}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
     `${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
