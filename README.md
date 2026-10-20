@@ -99,7 +99,7 @@ Pengaman supaya akun-akun tidak dianggap terkoordinasi oleh X (bisa di-suspend b
 | Error jaringan / server X | Diulang otomatis (maks. 3x) |
 | Antrian tersimpan | Restart / VPS reboot tidak menghilangkan antrian |
 | Cek channel | Bot lapor channel yang belum terbaca (privat / username salah) dan lapor lagi begitu terbaca. Bot dijadikan admin di channel yang tadinya dibaca lewat web → langsung pindah ke jalur bot (instan), tanpa dobel |
-| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`): jumlah komentar, skip, opt-in, error, status akun X |
+| Ringkasan harian | Tiap pagi (jam di `/auto dailyReportHour`), 24 jam terakhir: jumlah project **siap dikomentari** di channel X & jumlah grup di channel Telegram (+ sumber teratas), komentar, skip, opt-in, error, status akun X. Channel Telegram mendapat ringkasannya sendiri. Kapan saja: `/laporan` atau /menu → 📈 Laporan 24 jam |
 | Backup | `data.json` di-backup harian ke `backups/` (7 terakhir); kalau `data.json` rusak, dipulihkan sendiri dari backup |
 | Restart | pm2 menyalakan ulang bot kalau crash atau VPS reboot |
 
@@ -162,6 +162,7 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |
 | `/jeda` `/jeda 5` `/jeda 3 6` `/jeda project 10` | Jeda dalam menit: antar semua aksi (tetap / acak) dan antar komentar ke project yang sama |
 | `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, replyGapMin, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
+| `/laporan` | Laporan 24 jam terakhir: berapa "siap dikomentari" di channel X & channel Telegram, sumber teratas |
 | `/pause` `/resume` `/resume brand` `/status` | Kontrol bot (`/resume dexvra` = jalankan lagi satu akun yang kena rem darurat) |
 
 ## Yang sengaja TIDAK diotomatisasi

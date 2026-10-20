@@ -71,6 +71,34 @@ async function sendTo(chat, html, buttons) {
 }
 const report = (html, buttons) => sendTo(db.reportChat, html, buttons);
 
+// ---------- Laporan 24 jam: berapa "siap dikomentari" di channel X & channel Telegram ----------
+// Dicatat per laporan yang benar-benar terkirim (tetap benar walau bot restart); disimpan 2 hari
+function logSent(ch, src, kind) {
+  if (db.sentLog[0]?.at < Date.now() - 2 * DAY) db.sentLog = db.sentLog.filter((r) => r.at > Date.now() - 2 * DAY);
+  db.sentLog.push({ at: Date.now(), ch, src, ...(kind ? { kind } : {}) });
+  save();
+}
+function topSources(rows, n = 5) {
+  const count = new Map();
+  for (const r of rows) count.set(r.src, (count.get(r.src) || 0) + 1);
+  const top = [...count].sort((a, b) => b[1] - a[1]);
+  return top.slice(0, n).map(([src, k]) => `${esc(src)} ${k}`).join(' · ') + (top.length > n ? ` · +${top.length - n} lainnya` : '');
+}
+// Dua baris (channel X & channel Telegram), channel `first` di atas
+function dayCounts(first = 'x') {
+  const rows = db.sentLog.filter((r) => r.at > Date.now() - DAY);
+  const x = rows.filter((r) => r.ch === 'x'), tg = rows.filter((r) => r.ch === 'tg');
+  const kinds = (k) => tg.filter((r) => r.kind === k).length;
+  const lines = {
+    x: `🐦 <b>Channel X</b>: ${x.length} project siap dikomentari` + (x.length ? `\nSumber: ${topSources(x)}` : ''),
+    tg: '💬 <b>Channel Telegram</b>: ' + (!db.tgReportChat && !tg.length ? 'belum diatur (/menu → 💬 Channel Telegram)'
+      : `${tg.length} grup/channel siap dikomentari` +
+        (tg.length ? ` (👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel)\nSumber: ${topSources(tg)}` : ''))
+  };
+  return first === 'tg' ? `${lines.tg}\n${lines.x}` : `${lines.x}\n${lines.tg}`;
+}
+const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nJumlah laporan "siap dikomentari" yang terkirim ke tiap channel.\n\n${dayCounts()}`;
+
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
 const lastErr = new Map();
@@ -388,7 +416,7 @@ async function notOptedIn(handle, channelName) {
 // Laporan "siap dikomentari" project belum opt-in: komentar per brand (📋 Salin) + link ke tweet terbarunya, atau ke
 // profilnya kalau tweet tidak dicari (mode hemat: tanpa API X) / tidak bisa dicari (kredit habis, error X).
 // Reply, like & follow dilakukan admin di X — tidak ada aksi lewat API dari laporan ini
-function commentReport(handle, channelName, brands, { user, tweet } = {}) {
+async function commentReport(handle, channelName, brands, { user, tweet } = {}) {
   const username = user?.username || handle;
   const vars = { name: user?.name || handle, handle: username, channel: channelName };
   const texts = Object.fromEntries(brands.map((b) => {
@@ -398,7 +426,7 @@ function commentReport(handle, channelName, brands, { user, tweet } = {}) {
   }));
   save(); stat('manual');
   const multi = brands.length > 1;
-  return report(
+  const sent = await report(
     `💬 <b>@${esc(username)}</b> siap dikomentari\nSumber: ${esc(channelName)}\n` +
     (tweet ? `Tweet: "${esc(tweet.text.slice(0, 90))}…"\n` : '') +
     brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n'),
@@ -411,6 +439,7 @@ function commentReport(handle, channelName, brands, { user, tweet } = {}) {
       ] : [Markup.button.url('👤 Profil X', `https://x.com/${username}`)]
     ]
   );
+  if (sent) logSent('x', channelName);
 }
 
 // ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
@@ -751,7 +780,7 @@ async function tgLink(link, source) {
       brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
       [Markup.button.url(k?.open || '💬 Buka di Telegram', link.url), btn('🚫 Abaikan', `tgi:${key}`)]
     ]);
-  if (sent) return stat('tglinks');
+  if (sent) return logSent('tg', source, info.kind);
   delete db.tgHistory[key]; save(); // dicoba lagi saat link ini muncul lagi, setelah channel diperbaiki
   await reportOnce('tg-send', '⚠️ Gagal mengirim ke <b>channel Telegram</b> — pastikan bot masih admin di sana (izin Post Messages). ' +
     'Atur ulang di /menu → 💬 Channel Telegram');
@@ -982,14 +1011,17 @@ async function dailyTasks() {
   }
   for (const [k, log] of Object.entries(db.tplLog)) if (log.at(-1).at < Date.now() - 7 * DAY) delete db.tplLog[k];
   for (const [k, m] of Object.entries(db.manual)) if (m.at < Date.now() - 3 * DAY) delete db.manual[k];
+  db.sentLog = db.sentLog.filter((r) => r.at > Date.now() - 2 * DAY);
   const file = backup();
   const s = db.stats;
   const perBrand = await Promise.all(Object.keys(db.brands).map(async (b) =>
     `${esc(brandName(b))}: ${esc(await accountStatus(b))} · ${s[`replies:${b}`] || 0} komentar`));
+  // Tiap channel mendapat ringkasannya sendiri: jumlah channel itu di atas, channel lainnya di bawah
+  const head = '📊 <b>Ringkasan harian</b> (24 jam terakhir)\n';
+  if (db.tgReportChat) await sendTo(db.tgReportChat, head + dayCounts('tg'));
   await report(
-    `📊 <b>Ringkasan harian</b>\nKomentar terkirim: ${s.replies || 0}\n` +
-    `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n` +
-    (db.tgReportChat ? `Link grup Telegram dilaporkan: ${s.tglinks || 0}\n` : '') + '\n' +
+    `${head}${dayCounts('x')}\n\nKomentar terkirim dari akun X: ${s.replies || 0}\n` +
+    `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n\n` +
     `<b>Akun X</b>\n${perBrand.join('\n')}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
     `${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
     `Opt-in aktif: ${Object.keys(db.optins).length}\nAntrian: ${db.queue.length}\nBackup: ${esc(file)}`
@@ -1072,6 +1104,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 <b>Otomatis</b>
 /auto — lihat · /auto watchOptins false · /auto dailyReportHour 8
 
+/laporan — jumlah laporan 24 jam terakhir: channel X &amp; channel Telegram
 /pause · /resume · /resume brand · /status
 
 <b>Untuk project</b> (hanya kalau opt-in publik ON di /menu → Otomatis): /optin @handle [brand], /verify @handle`;
@@ -1472,6 +1505,7 @@ function resume(b) {
   return b ? `▶️ Akun ${brandName(b)} jalan lagi.` : '▶️ Bot jalan lagi.';
 }
 bot.command('status', (ctx) => ctx.replyWithHTML(statusText()));
+bot.command('laporan', (ctx) => ctx.replyWithHTML(dayReportText()));
 function statusText() {
   const accounts = Object.keys(db.brands).map((b) => {
     if (!clients[b]) return `${esc(brandName(b))}: ❌ belum ada akun`;
@@ -1518,7 +1552,7 @@ function homePanel() {
       [btn('🤝 Opt-in', 'm:opt'), btn('⏱ Jeda & Batas', 'm:lim')],
       [btn('🔎 Filter', 'm:flt'), btn('🤖 Otomatis', 'm:auto')],
       [btn(`📨 Channel laporan ${db.reportChat ? '✅' : '❌'}`, 'm:ask:report')],
-      [btn(`💬 Channel Telegram ${db.tgReportChat ? '✅' : '❌'}`, 'm:tg')],
+      [btn(`💬 Channel Telegram ${db.tgReportChat ? '✅' : '❌'}`, 'm:tg'), btn('📈 Laporan 24 jam', 'm:day')],
       [db.paused ? btn('▶️ Jalankan lagi', 'm:resume') : btn('⏸ Pause semua', 'm:pause'), btn('❓ Bantuan', 'm:help')]
     ]
   };
@@ -1943,6 +1977,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
   switch (act) {
     case 'home': panel = homePanel(); break;
     case 'status': panel = { text: statusText(), rows: [[btn('🔄 Refresh', 'm:status')], HOME] }; break;
+    case 'day': panel = { text: dayReportText(), rows: [[btn('🔄 Refresh', 'm:day')], HOME] }; break;
     case 'acc': panel = accountsPanel(); break;
     case 'conn': if (/^[a-z0-9_]{2,20}$/.test(arg)) panel = connPanel(arg); break;
     case 'guide':
@@ -2042,6 +2077,7 @@ const PUBLIC_COMMANDS = [
 const ADMIN_COMMANDS = [
   { command: 'menu', description: '⚙️ Panel pengaturan (tombol)' },
   { command: 'status', description: 'Status bot & akun X' },
+  { command: 'laporan', description: 'Laporan 24 jam: jumlah X & Telegram per channel' },
   { command: 'accounts', description: 'Akun X per brand' },
   { command: 'channels', description: 'Channel yang dipantau' },
   { command: 'tpls', description: 'Lihat template' },

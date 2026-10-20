@@ -37,6 +37,7 @@ const defaults = {
   tgReportChat: null, // channel Telegram: link grup/channel Telegram project dari channel target (null = mati)
   tgHistory: {}, // link Telegram (username / +kode undangan) -> waktu terakhir dilaporkan
   tgIgnore: [], // link Telegram yang tidak dilaporkan lagi (tombol 🚫 Abaikan)
+  sentLog: [], // laporan "siap dikomentari" 2 hari terakhir: { at, ch: 'x' | 'tg', src, kind? } → laporan 24 jam per channel
   paused: false, // pause manual (/pause)
   pausedUntil: {}, // brand -> pause otomatis karena rate limit X, jalan lagi sendiri setelah waktu ini
   optins: {}, // handle -> { at, via, by, brand }

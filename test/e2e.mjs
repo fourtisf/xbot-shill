@@ -940,8 +940,11 @@ await test('ringkasan harian + backup otomatis', async () => {
   db.auto.dailyReportHour = 0;
   db.lastDaily = null;
   const r = await reportMatching('Ringkasan harian');
-  assert.match(r, /Komentar terkirim: \d+/);
-  assert.match(r, /Link grup Telegram dilaporkan: 1\n/);
+  assert.match(r, /Komentar terkirim dari akun X: \d+/);
+  // Jumlah "siap dikomentari" 24 jam per channel: channel laporan X → X di atas, channel Telegram → Telegram di atas
+  assert.match(r, /\(24 jam terakhir\)\n🐦 <b>Channel X<\/b>: [1-9]\d* project siap dikomentari\nSumber: [^\n]+\n💬 <b>Channel Telegram<\/b>: 1 grup\/channel siap dikomentari \(👥 1 grup · 📢 0 channel\)\nSumber: Alpha Calls 1\n/);
+  const tg = messagesTo(db.tgReportChat).find((t) => t.includes('Ringkasan harian'));
+  assert.match(tg, /\(24 jam terakhir\)\n💬 <b>Channel Telegram<\/b>: 1 grup\/channel[^\n]*\nSumber: Alpha Calls 1\n🐦 <b>Channel X<\/b>: [1-9]/);
   assert.match(r, /Fourtis: ✅ @fourtisbot/);
   assert.match(r, /Dexvra: /);
   const backups = fs.readdirSync(path.join(tmp, 'backups'));
