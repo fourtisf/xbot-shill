@@ -84,18 +84,19 @@ function topSources(rows, n = 5) {
   const top = [...count].sort((a, b) => b[1] - a[1]);
   return top.slice(0, n).map(([src, k]) => `${esc(src)} ${k}`).join(' · ') + (top.length > n ? ` · +${top.length - n} lainnya` : '');
 }
-// Jumlah satu channel saja ('x' atau 'tg'): tiap channel hanya melihat angkanya sendiri
+// Total yang di-post ke satu channel ('x' atau 'tg') dalam 24 jam: tiap channel hanya melihat angkanya sendiri.
+// Satu project / link Telegram maks. 1 laporan per cooldownDays, jadi total = jumlah project / link yang berbeda
 function dayCount(ch) {
   const rows = db.sentLog.filter((r) => r.at > Date.now() - DAY && r.ch === ch);
   const src = rows.length ? `\nSumber: ${topSources(rows)}` : '';
-  if (ch === 'x') return `🐦 <b>Channel X</b>: ${rows.length} project siap dikomentari${src}`;
-  if (!db.tgReportChat && !rows.length) return '💬 <b>Channel Telegram</b>: belum diatur (/menu → 💬 Channel Telegram)';
+  if (ch === 'x') return `🐦 <b>Total project X diposting: ${rows.length}</b>${src}`;
+  if (!db.tgReportChat && !rows.length) return '💬 Channel Telegram belum diatur (/menu → 💬 Channel Telegram)';
   const kinds = (k) => rows.filter((r) => r.kind === k).length;
-  return `💬 <b>Channel Telegram</b>: ${rows.length} grup/channel siap dikomentari` +
-    (rows.length ? ` (👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel)` : '') + src;
+  return `💬 <b>Total link Telegram diposting: ${rows.length}</b>` +
+    (rows.length ? `\n👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel` : '') + src;
 }
 // DM admin (/laporan): kedua channel, masing-masing terpisah
-const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nJumlah laporan "siap dikomentari" yang terkirim ke tiap channel.\n\n` +
+const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nTotal laporan "siap dikomentari" yang di-post ke tiap channel.\n\n` +
   `${dayCount('x')}\n\n${dayCount('tg')}`;
 
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------

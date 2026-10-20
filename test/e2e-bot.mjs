@@ -441,9 +441,9 @@ await test('Template Telegram: tambah/hapus lewat panel & perintah, /tpls; /sett
 await test('/laporan & 📈 Laporan 24 jam: jumlah laporan per channel (X & Telegram) + sumber teratas', async () => {
   const r = await dm(ADMIN, '/laporan');
   assert.match(r, /^📈 <b>Laporan 24 jam terakhir<\/b>/);
-  assert.match(r, /\n🐦 <b>Channel X<\/b>: 0 project siap dikomentari\n\n/); // test ini: Komentar 1-tap OFF
+  assert.match(r, /\n🐦 <b>Total project X diposting: 0<\/b>\n\n/); // test ini: Komentar 1-tap OFF
   // 9 laporan terkirim di test Channel Telegram (laporan yang gagal terkirim tidak dihitung)
-  assert.match(r, /💬 <b>Channel Telegram<\/b>: 9 grup\/channel siap dikomentari \(👥 7 grup · 📢 1 channel\)\nSumber: Alpha Calls 7 · Theta Calls 2$/);
+  assert.match(r, /💬 <b>Total link Telegram diposting: 9<\/b>\n👥 7 grup · 📢 1 channel\nSumber: Alpha Calls 7 · Theta Calls 2$/);
   assert.ok(dataOf(await tap(ADMIN, 'm:home')).includes('m:day'));
   assert.equal((await tap(ADMIN, 'm:day')).text, r);
 });
