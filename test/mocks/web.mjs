@@ -34,9 +34,30 @@ ${ch.posts.map((p) => webPost(name, ch.title, p)).join('\n')}
 const PRIVATE = (name) => `<!DOCTYPE html><html><head><meta property="og:title" content="Telegram: Contact @${name}"></head>
 <body><div class="tgme_page"><div class="tgme_page_title">If you have Telegram, you can contact @${name} right away.</div></div></body></html>`;
 
+// Halaman info t.me/<nama> dan t.me/+kode (grup, channel, akun pribadi, bot). M.tgPages: nama (huruf kecil) atau
+// +kode -> { title, extra, down? }. Yang tidak ada di M.tgPages = username tidak ada / undangan kedaluwarsa
+M.tgPages ||= {};
+const tgPage = (p) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Telegram: Contact</title>
+<meta property="og:title" content="${p.title}"></head><body class="no_transition"><div class="tgme_page_wrap"><div class="tgme_body_wrap"><div class="tgme_page">
+<div class="tgme_page_photo"><a href="tg://resolve?domain=x"><img class="tgme_page_photo_image" src="https://cdn4.cdn-telegram.org/file/x.jpg"></a></div>
+<div class="tgme_page_title" dir="auto"><span dir="auto">${p.title}</span>${p.verified ? '<i class="verified-icon"></i>' : ''}</div>
+<div class="tgme_page_extra">
+  ${p.extra}
+</div>
+<div class="tgme_page_description" dir="auto">Official community</div>
+<div class="tgme_page_action"><a class="tgme_action_button_new shine" href="tg://resolve?domain=x">View in Telegram</a></div>
+</div></div></div></body></html>`;
+
 globalThis.fetch = async (url) => {
   url = String(url);
   M.webCalls.push(url);
+  const info = /^https:\/\/t\.me\/(\+?[\w-]+)$/.exec(url);
+  if (info && info[1] !== 's') {
+    const key = info[1].startsWith('+') ? info[1] : info[1].toLowerCase();
+    const p = M.tgPages[key];
+    if (p?.down) throw new TypeError('fetch failed');
+    return new Response(p ? tgPage(p) : PRIVATE(info[1]), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+  }
   const m = /^https:\/\/t\.me\/s\/(\w+)$/.exec(url);
   if (!m) throw new Error(`fetch tidak di-mock: ${url}`);
   const ch = M.web[m[1].toLowerCase()];

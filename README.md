@@ -9,12 +9,46 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
   - **Mode hemat OFF**: bot mencari tweet terbarunya lewat API X (±2 kredit per project) → tombol **🔗 Tweet terbaru** + ✍️ Ubah di X (PC).
     Kredit habis (402) / error X → laporan otomatis memakai 👤 Profil X; kredit habis diberi 1 peringatan per 6 jam
   - Project yang tidak bisa disiapkan (tidak ada tweet baru, tidak ditemukan) tidak dilaporkan, cukup di log. Kalau 1-tap OFF: setiap project hanya dilaporkan
+- **💬 Channel Telegram** (channel khusus, terpisah dari laporan X): post channel target yang berisi link grup/channel
+  Telegram project (`t.me/…`) dikirim ke sini dengan komentar per brand → **📋 Salin** → **💬 Buka grup** → tempel di grup
+  pakai akun Telegram sendiri. Lihat [Channel Telegram](#channel-telegram)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
 - **Multi brand**: Fourtis & Dexvra (dan brand lain) masing-masing punya akun X & template sendiri
 
 Semua pengaturan lewat bot Telegram — tidak ada website.
+
+## Channel Telegram
+
+Channel khusus untuk shill di **grup Telegram** project — terpisah dari channel laporan X. Channel target yang dipantau
+sama; setiap post yang berisi link grup/channel Telegram project dikirim ke channel ini:
+
+```
+💬 @PepePortal siap dikomentari
+👥 Grup · Pepe Portal · 12 345 anggota
+Sumber: MadApes Calls
+Komentar Fourtis: "…"
+Komentar Dexvra: "…"
+[📋 Salin · Fourtis] [📋 Salin · Dexvra]
+[💬 Buka grup] [🚫 Abaikan]
+```
+
+- **Atur**: buat channel baru, jadikan bot admin (izin *Post Messages*) → /menu → **💬 Channel Telegram** → 📨 Atur channel →
+  kirim ID channel (`-100…`). Bisa juga `/settgreport -100…` di DM bot, atau posting `/settgreport` di channel itu. Bot mengirim
+  pesan tes dulu. Matikan: tombol 🛑 Matikan
+- **Link yang dihitung**: link `t.me/…` yang ditulis, ditautkan (teks bertaut) atau di tombol post. `@mention` **tidak** dihitung
+  (di post call, `@nama` sering handle X). Link undangan grup privat (`t.me/+…`) ikut dilaporkan
+- **Dilewati otomatis**: bot (`…bot`, `?start=`), link post (`t.me/nama/123`), link ke channel target sendiri, nomor telepon.
+  Tiap link dicek gratis di halaman `t.me/<nama>` (tanpa API, tanpa login): akun pribadi, bot, dan link mati tidak dilaporkan;
+  grup/channel tampil dengan nama & jumlah anggota. t.me sedang tidak bisa dibuka → tetap dilaporkan tanpa info
+- **Tidak dobel**: satu link maks. 1 laporan per *Jeda project yang sama* (🔎 Filter, bawaan 7 hari)
+- **🚫 Abaikan** (hanya ADMIN_IDS): link itu tidak dilaporkan lagi — mis. grup chat milik channel call itu sendiri.
+  Kosongkan daftarnya di /menu → 💬 Channel Telegram
+- **Template**: tiap brand bisa punya komentar khusus grup Telegram (/menu → 📝 Template → brand → ➕ Tambah komentar Telegram,
+  atau `/addtgtpl dexvra teks`). Kosong = memakai template komentar X brand itu. Variabel: `{name}` nama grup,
+  `{handle}` username grup, `{channel}` channel sumber
+- Bot **tidak pernah menulis di grup orang lain** — komentar ditempel admin sendiri (spam bot di grup = di-ban / akun dibatasi Telegram)
 
 ## Multi brand / multi akun
 
@@ -98,6 +132,7 @@ pm2 logs xagent                  # lihat log
 1. DM bot: `/addaccount fourtis APP_KEY APP_SECRET ACCESS_TOKEN ACCESS_SECRET` lalu `/addaccount dexvra ...` (pesan otomatis dihapus)
 2. `/addchannel @channeltarget` (boleh juga link `https://t.me/channeltarget`; ulangi untuk tiap channel). Channel publik langsung terbaca tanpa admin — bot membalas berapa post yang terbaca. Kalau bot bilang *belum bisa dibaca*: cek ejaan username, atau channel itu privat (jadikan bot admin)
 3. Buat channel laporan, jadikan bot admin (izin *Post Messages*), lalu /menu → 📨 Channel laporan → kirim ID channel (`-100…`). Bisa juga `/setreport -100…` di DM bot, atau posting `/setreport` di channel itu. Bot mengirim pesan tes dulu; kalau gagal, bot memberi tahu dan channel lama tetap dipakai
+   - *(Opsional)* Channel khusus grup Telegram: buat channel kedua, jadikan bot admin, lalu /menu → 💬 Channel Telegram (atau `/settgreport -100…`)
 4. Ganti template contoh: `/tpls` untuk lihat, `/addtpl dexvra ...`, `/deltpl dexvra 1`
 5. `/status` dan `/accounts` untuk cek semua sudah ✅
 
@@ -121,6 +156,7 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 | `/accounts` `/addaccount brand ...` `/delaccount brand` | Akun X per brand (`/setx ...` = `/addaccount` brand utama) |
 | `/channels` `/addchannel @ch` `/delchannel` | Kelola channel target (berlaku untuk semua brand) |
 | `/tpls [brand]` `/addtpl [brand] teks` `/deltpl [brand] n` | Template komentar per brand (`{name}` `{handle}` `{channel}`; `{channel}` kosong untuk komentar dari pantauan tweet) |
+| `/settgreport -100…` `/addtgtpl [brand] teks` `/deltgtpl [brand] n` | Channel Telegram & komentar khusus grup Telegram per brand (kosong = template komentar X) |
 | `/optins` `/addoptin @h [brand]` `/deloptin` | Daftar project opt-in & brand-nya (+ yang menunggu verifikasi) |
 | `/filter` `/filter minFollowers 1000` | minFollowers, minAgeDays, blacklist (bawaan **mati**: setiap link X dari channel langsung diproses), cooldownDays, tweetsPerProject, maxTweetAgeHours |
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |

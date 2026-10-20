@@ -54,18 +54,22 @@ const accountsReport = async () =>
   (await Promise.all(Object.keys(db.brands).map(async (b) => `${brandName(b)}: ${await accountStatus(b)}`))).join('\n');
 
 // ---------- Laporan ----------
-async function report(html, buttons) {
-  if (!db.reportChat) return;
+// Kembalikan true kalau terkirim
+async function sendTo(chat, html, buttons) {
+  if (!chat) return false;
   try {
-    await bot.telegram.sendMessage(db.reportChat, html, {
+    await bot.telegram.sendMessage(chat, html, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       ...(buttons ? Markup.inlineKeyboard(buttons) : {})
     });
+    return true;
   } catch (e) {
-    console.error('report error:', e.message);
+    console.error(`kirim ke ${chat} gagal:`, e.message);
+    return false;
   }
 }
+const report = (html, buttons) => sendTo(db.reportChat, html, buttons);
 
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
@@ -131,6 +135,31 @@ function extractHandles(text, urls) {
   let m;
   while ((m = re.exec(all))) if (!RESERVED.has(m[1].toLowerCase())) out.add(m[1].toLowerCase());
   return [...out];
+}
+
+// ---------- Ekstrak link grup / channel Telegram project dari post ----------
+// Hanya link t.me yang ditulis / ditautkan. @mention tidak dihitung: di post call, @nama sering handle X.
+// Dilewati: link post (t.me/nama/123), bot (username berakhiran "bot", ?start=), halaman fitur Telegram,
+// nomor telepon (t.me/+62…), dan nama di `skip` (channel sumber, channel target, bot ini)
+const TG_RESERVED = new Set(['share', 'addstickers', 'addemoji', 'addtheme', 'addlist', 'proxy', 'socks', 'boost',
+  'setlanguage', 'login', 'confirmphone', 'invoice', 'giftcode', 'contact', 'telegram', 'premium', 'stars']);
+function extractTgLinks(text, urls, skip) {
+  const all = [text, ...urls].join(' ');
+  const re = /(?<![\w.@/-])(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.(?:me|dog)\/(?:(?:\+|joinchat\/)([\w-]{10,40})|([a-z]\w{3,31}))(?![\w-])(\/\d|\?start)?/gi;
+  const out = new Map();
+  let m;
+  while ((m = re.exec(all))) {
+    const [, invite, name, tail] = m;
+    if (tail) continue;
+    if (invite) {
+      if (/\D/.test(invite)) out.set('+' + invite, { key: '+' + invite, invite, url: `https://t.me/+${invite}` });
+      continue;
+    }
+    const u = name.toLowerCase();
+    if (u.endsWith('bot') || TG_RESERVED.has(u) || skip.has(u)) continue;
+    out.set(u, { key: u, username: name, url: `https://t.me/${name}` });
+  }
+  return [...out.values()];
 }
 
 // ---------- Template ----------
@@ -531,6 +560,8 @@ function seenKey(ch, chat) {
   return ch;
 }
 
+// Link Telegram dicek satu per satu: urutan laporan = urutan di post, t.me tidak dibanjiri
+let tgQueue = Promise.resolve();
 // Dipakai semua cara baca; lastSeen mencegah post diproses dua kali
 function onChannelPost(msg, chat, t0, ch) {
   const key = seenKey(ch, chat);
@@ -538,7 +569,16 @@ function onChannelPost(msg, chat, t0, ch) {
   db.lastSeen[key] = msg.id; save();
   if (db.paused) return false;
   const urls = (msg.entities || []).map((e) => e.url).filter(Boolean);
-  for (const h of extractHandles(msg.message || '', urls)) processSafe(h, chat.title || chat.username, t0);
+  const source = chat.title || chat.username;
+  for (const h of extractHandles(msg.message || '', urls)) processSafe(h, source, t0);
+  if (db.tgReportChat) {
+    // Link ke channel sumber / channel target lain / bot ini = promosi channel call itu sendiri, bukan project
+    const skip = new Set([...chanKeys(chat), ...db.channels, '@' + bot.botInfo?.username]
+      .filter((k) => k?.startsWith('@')).map((k) => k.slice(1).toLowerCase()));
+    for (const l of extractTgLinks(msg.message || '', urls, skip)) {
+      tgQueue = tgQueue.then(() => tgLink(l, source)).catch((e) => console.error('tgLink:', e));
+    }
+  }
   return true;
 }
 const tooOld = (at) => Date.now() - at > db.auto.catchUpMaxAgeHours * 3600_000;
@@ -580,21 +620,32 @@ function parseWebPosts(html) {
     // Teks post saja (bukan kutipan post yang dibalas); link diambil dari semua href di post (teks, tombol, preview)
     const text = [...block.matchAll(/class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/g)]
       .map((m) => unescapeHtml(m[1].replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''))).join('\n');
-    const urls = [...block.matchAll(/href="(https?:[^"]+)"/g)].map((m) => unescapeHtml(m[1]));
+    // Kepala post (nama channel, diteruskan dari, kutipan balasan, jam) dan @mention (di web, @nama otomatis jadi
+    // link t.me/nama) bukan link yang dibagikan post
+    const urls = [...block.matchAll(/<a\s([^>]*)>([\s\S]*?)<\/a>/g)].flatMap(([, attrs, inner]) => {
+      const href = /href="(https?:[^"]+)"/.exec(attrs)?.[1];
+      if (!href || /tgme_widget_message_(?:owner_name|forwarded_from|reply|date|via_bot)/.test(attrs)) return [];
+      const url = unescapeHtml(href);
+      const mention = /^https?:\/\/t\.me\/(\w+)\/?$/i.exec(url)?.[1];
+      return mention && unescapeHtml(inner.replace(/<[^>]+>/g, '')).trim().toLowerCase() === '@' + mention.toLowerCase() ? [] : [url];
+    });
     posts.push({ id, text, urls, date: Date.parse(/datetime="([^"]+)"/.exec(block)?.[1]) });
   }
   return posts;
 }
 
-let webPauseUntil = 0;
-// null = tidak ada halaman publik (channel privat / bukan channel / username salah)
-async function fetchWeb(name) {
-  const res = await fetch(`https://t.me/s/${encodeURIComponent(name)}`, {
+let webPauseUntil = 0; // t.me membatasi (429): semua bacaan t.me jeda sampai waktu ini
+async function tmeGet(path) {
+  const res = await fetch(`https://t.me/${path}`, {
     headers: { 'user-agent': WEB_UA, 'accept-language': 'en' }, signal: AbortSignal.timeout(15_000)
   });
   if (res.status === 429) webPauseUntil = Date.now() + (Number(res.headers.get('retry-after')) || 60) * 1000;
   if (!res.ok) throw new Error(`t.me menjawab HTTP ${res.status}`);
-  const html = await res.text();
+  return res.text();
+}
+// null = tidak ada halaman publik (channel privat / bukan channel / username salah)
+async function fetchWeb(name) {
+  const html = await tmeGet(`s/${encodeURIComponent(name)}`);
   if (!html.includes('data-post="')) return null;
   const title = /<meta property="og:title" content="([^"]*)"/.exec(html)?.[1];
   return { title: title ? unescapeHtml(title) : name, posts: parseWebPosts(html) };
@@ -634,6 +685,89 @@ async function webLoop() {
   try { await webPoll(); } catch (e) { console.error('webPoll:', e); }
   setTimeout(webLoop, WEB_POLL_MS || Math.max(10, db.auto.webPollSec) * 1000);
 }
+
+// ---------- Channel Telegram: link grup / channel Telegram project → laporan "siap dikomentari" ----------
+// Channel terpisah dari channel laporan X. Komentar disalin (📋) lalu ditempel admin sendiri di grup itu dengan
+// akun Telegram-nya — bot tidak pernah menulis di grup orang lain. Satu link dilaporkan sekali per cooldownDays
+const TG_KIND = {
+  group: { icon: '👥', name: 'Grup', unit: 'anggota', open: '💬 Buka grup' },
+  channel: { icon: '📢', name: 'Channel', unit: 'subscriber', open: '📢 Buka channel' }
+};
+// Info dari halaman t.me/<nama> atau t.me/+kode (gratis, tanpa login): nama, jenis, jumlah anggota.
+// null = bukan grup/channel (akun pribadi, bot, tidak ada, undangan kedaluwarsa) → tidak dilaporkan.
+// {} = halaman tidak bisa dibuka (t.me error / dibatasi) → tetap dilaporkan, tanpa info
+async function tgInfo(link) {
+  if (Date.now() < webPauseUntil) return {};
+  let html;
+  try {
+    html = await tmeGet(link.invite ? `+${link.invite}` : link.username);
+  } catch (e) {
+    console.error(`t.me ${link.key}:`, e.message);
+    return {};
+  }
+  const text = (re) => unescapeHtml((re.exec(html)?.[1] || '').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+  const title = text(/<div class="tgme_page_title"[^>]*>([\s\S]*?)<\/div>/);
+  const extra = text(/<div class="tgme_page_extra"[^>]*>([\s\S]*?)<\/div>/);
+  const og = unescapeHtml(/<meta property="og:title" content="([^"]*)"/.exec(html)?.[1] || '');
+  const kind = /\b(members?|online)\b/i.test(extra) ? 'group' : /\b(subscribers?|followers?)\b/i.test(extra) ? 'channel' : null;
+  if (kind) return { title: title || og, kind, count: /(\d[\d\s.,]*?)\s*(?:members?|subscribers?|followers?)\b/i.exec(extra)?.[1] };
+  // Tanpa jumlah anggota: akun pribadi / bot (extra = @username) atau halaman "tidak ada" ("Telegram: Contact @nama").
+  // Selain itu (mis. channel yang menyembunyikan jumlah subscriber) tetap dilaporkan
+  if (!title || /^@\w+$/.test(extra) || /^Telegram: |right away/i.test(`${og}\n${title}`)) return null;
+  return { title };
+}
+const tgTemplates = (b) => (db.brands[b].tgTemplates?.length ? db.brands[b].tgTemplates : db.brands[b].templates);
+// Brand yang punya akun X atau template Telegram sendiri (akun X tidak dipakai: komentar ditempel admin di Telegram)
+function tgBrands() {
+  const list = Object.keys(db.brands).filter((b) => clients[b] || db.brands[b].tgTemplates?.length);
+  return list.length ? list : [db.defaultBrand];
+}
+async function tgLink(link, source) {
+  const { key } = link;
+  if (!db.tgReportChat || db.tgIgnore.includes(key) || Date.now() - (db.tgHistory[key] || 0) < db.filter.cooldownDays * DAY) return;
+  db.tgHistory[key] = Date.now(); save(); // dicatat sebelum await: link yang sama di post berikutnya tidak dobel
+  const info = await tgInfo(link);
+  if (!info) return console.log(`${link.url} bukan grup/channel (akun pribadi, bot, atau tidak ada) — tidak dilaporkan`);
+  const brands = tgBrands();
+  const vars = { name: info.title || (link.username ? '@' + link.username : 'grup ini'), handle: link.username || '', channel: source };
+  const texts = Object.fromEntries(brands.map((b) => {
+    const tpl = pickTemplate(tgTemplates(b), 'tg:' + b, false);
+    useTemplate('tg:' + b, tpl);
+    return [b, fill(tpl, vars)];
+  }));
+  const k = TG_KIND[info.kind];
+  const about = [
+    link.invite ? `🔒 ${k ? `${k.name} privat` : 'Link undangan'}` : k && `${k.icon} ${k.name}`,
+    link.username && info.title && esc(info.title),
+    info.count && `${info.count} ${k?.unit || 'anggota'}`
+  ].filter(Boolean).join(' · ');
+  const multi = brands.length > 1;
+  const sent = await sendTo(db.tgReportChat,
+    `💬 <b>${esc(link.username ? '@' + link.username : info.title || `t.me/+${link.invite}`)}</b> siap dikomentari\n` +
+    (about ? about + '\n' : '') + `Sumber: ${esc(source)}\n` +
+    brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n'),
+    [
+      brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
+      [Markup.button.url(k?.open || '💬 Buka di Telegram', link.url), btn('🚫 Abaikan', `tgi:${key}`)]
+    ]);
+  if (sent) return stat('tglinks');
+  delete db.tgHistory[key]; save(); // dicoba lagi saat link ini muncul lagi, setelah channel diperbaiki
+  await reportOnce('tg-send', '⚠️ Gagal mengirim ke <b>channel Telegram</b> — pastikan bot masih admin di sana (izin Post Messages). ' +
+    'Atur ulang di /menu → 💬 Channel Telegram');
+}
+// 🚫 Abaikan: link ini (mis. grup chat milik channel call itu sendiri) tidak dilaporkan lagi
+bot.action(/^tgi:(\+?[\w-]{4,60})$/, async (ctx) => {
+  if (!isAdmin(ctx)) return ctx.answerCbQuery('Khusus admin').catch(() => {});
+  const key = ctx.match[1];
+  if (!db.tgIgnore.includes(key)) { db.tgIgnore = [...db.tgIgnore.slice(-499), key]; save(); }
+  await ctx.answerCbQuery('🚫 Link ini tidak dilaporkan lagi. Batalkan: /menu → 💬 Channel Telegram').catch(() => {});
+  const kb = ctx.callbackQuery.message?.reply_markup?.inline_keyboard;
+  if (kb) {
+    await ctx.editMessageReplyMarkup({
+      inline_keyboard: kb.map((r) => r.map((b) => (b.callback_data === ctx.match[0] ? { text: '🚫 Diabaikan', callback_data: 'm:noop' } : b)))
+    }).catch(() => {});
+  }
+});
 
 async function startListener() {
   tg = new TelegramClient(
@@ -840,6 +974,7 @@ async function dailyTasks() {
   db.lastDaily = now.toDateString();
   lastErr.clear();
   for (const [h, t] of Object.entries(db.history)) if (Date.now() - t > db.filter.cooldownDays * DAY) delete db.history[h];
+  for (const [k, t] of Object.entries(db.tgHistory)) if (Date.now() - t > db.filter.cooldownDays * DAY) delete db.tgHistory[k];
   for (const [h, log] of Object.entries(db.replyLog)) {
     const l = log.filter((t) => t > Date.now() - DAY);
     if (l.length) db.replyLog[h] = l; else delete db.replyLog[h];
@@ -852,7 +987,8 @@ async function dailyTasks() {
     `${esc(brandName(b))}: ${esc(await accountStatus(b))} · ${s[`replies:${b}`] || 0} komentar`));
   await report(
     `📊 <b>Ringkasan harian</b>\nKomentar terkirim: ${s.replies || 0}\n` +
-    `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n\n` +
+    `Di-skip filter: ${s.skipped || 0}\nOpt-in baru: ${s.optins || 0}\nError: ${s.errors || 0}\n` +
+    (db.tgReportChat ? `Link grup Telegram dilaporkan: ${s.tglinks || 0}\n` : '') + '\n' +
     `<b>Akun X</b>\n${perBrand.join('\n')}\n\nChannel terpantau: ${targets.size}/${db.channels.length}` +
     `${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
     `Opt-in aktif: ${Object.keys(db.optins).length}\nAntrian: ${db.queue.length}\nBackup: ${esc(file)}`
@@ -914,6 +1050,10 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 <b>Channel</b> (publik: bot tidak perlu admin)
 /addchannel @channel · /delchannel @channel · /channels
 /setreport -100… — atur channel laporan (atau /menu → 📨 Channel laporan)
+
+<b>Channel Telegram</b> (link grup Telegram project, terpisah dari laporan X)
+/settgreport -100… — atur channel Telegram (atau /menu → 💬 Channel Telegram)
+/addtgtpl [brand] teks · /deltgtpl [brand] nomor — komentar untuk grup Telegram
 
 <b>Template per brand</b> (variabel: {name} {handle} {channel})
 /tpls [brand] — lihat
@@ -1039,7 +1179,7 @@ bot.command('optout', (ctx) => {
 bot.use((ctx, next) => {
   const t = ctx.message?.text || ctx.channelPost?.text || '';
   if (!t.startsWith('/')) return next();
-  if (ctx.channelPost && t.startsWith('/setreport')) return next();
+  if (ctx.channelPost && /^\/set(tg)?report/.test(t)) return next();
   if (!isAdmin(ctx)) return;
   return next();
 });
@@ -1167,34 +1307,45 @@ bot.command('channels', (ctx) => replyLong(ctx, db.channels.length
   ? db.channels.map(chanLine).join('\n')
   : 'Belum ada channel.'));
 
-// Kirim pesan tes dulu; disimpan hanya kalau bot benar-benar bisa posting ke sana
-async function setReportChat(target) {
+// Kirim pesan tes dulu; disimpan hanya kalau bot benar-benar bisa posting ke sana.
+// key: reportChat (channel laporan) atau tgReportChat (channel Telegram)
+const REPORT_KIND = {
+  reportChat: ['Channel laporan', '📊 Channel laporan aktif — semua laporan bot dikirim ke sini.', 'Laporan'],
+  tgReportChat: ['Channel Telegram', '💬 Channel Telegram aktif — link grup Telegram project dari channel target dikirim ke sini, ' +
+    'lengkap dengan komentar siap tempel.', 'Link grup Telegram']
+};
+async function setReportChat(target, key = 'reportChat') {
+  const [name, test, what] = REPORT_KIND[key];
   const id = /^-?\d+$/.test(String(target)) ? Number(target) : target;
   try {
-    const m = await bot.telegram.sendMessage(id, '📊 Channel laporan aktif — semua laporan bot dikirim ke sini.');
-    db.reportChat = m.chat?.id ?? id; save();
-    return `✅ Laporan sekarang dikirim ke ${m.chat?.title || id}. Di sana muncul pesan "Channel laporan aktif".`;
+    const m = await bot.telegram.sendMessage(id, test);
+    db[key] = m.chat?.id ?? id; save();
+    return `✅ ${what} sekarang dikirim ke ${m.chat?.title || id}. Di sana muncul pesan "${name} aktif".`;
   } catch (e) {
     return `❌ Bot tidak bisa mengirim pesan ke ${id} (${e.description || e.message}).\n` +
       'Pastikan bot sudah jadi ADMIN di channel itu dengan izin "Post Messages", dan ID-nya benar (diawali -100).' +
-      (db.reportChat ? ' Channel laporan lama tetap dipakai.' : '');
+      (db[key] ? ` ${name} lama tetap dipakai.` : '');
   }
 }
 const reportTarget = (s) => (/^-?\d+$/.test(s) ? (/^-100\d{5,}$/.test(s) ? s : null) : normChannel(s));
-bot.command('setreport', async (ctx) => {
-  const arg = ctx.message?.text.split(/\s+/)[1];
-  if (!arg) return ctx.reply(await setReportChat(ctx.chat.id)); // laporan ke chat ini
-  const t = reportTarget(arg);
-  if (!t) return ctx.reply('Format: /setreport -1001234567890 (ID channel laporan) atau /setreport @namachannel');
-  ctx.reply(await setReportChat(t));
-});
+for (const [cmd, key] of [['setreport', 'reportChat'], ['settgreport', 'tgReportChat']]) {
+  bot.command(cmd, async (ctx) => {
+    const arg = ctx.message?.text.split(/\s+/)[1];
+    if (!arg) return ctx.reply(await setReportChat(ctx.chat.id, key)); // ke chat ini
+    const t = reportTarget(arg);
+    if (!t) return ctx.reply(`Format: /${cmd} -1001234567890 (ID channel) atau /${cmd} @namachannel`);
+    ctx.reply(await setReportChat(t, key));
+  });
+}
 bot.on('channel_post', async (ctx, next) => {
-  if (ctx.channelPost.text?.startsWith('/setreport')) {
+  const set = /^\/set(tg)?report\b/.exec(ctx.channelPost.text || '');
+  if (set) {
     // Post channel tidak membawa pengirim: pastikan salah satu ADMIN_IDS adalah admin channel ini
     const admins = await ctx.getChatAdministrators().catch(() => []);
     if (!admins.some((a) => ADMINS.includes(String(a.user.id)))) return;
-    db.reportChat = ctx.chat.id; save();
-    return ctx.reply('📊 Channel laporan aktif.');
+    const key = set[1] ? 'tgReportChat' : 'reportChat';
+    db[key] = ctx.chat.id; save();
+    return ctx.reply(`${REPORT_KIND[key][1].split(' — ')[0]}.`);
   }
   botChannelPost(ctx.channelPost);
   return next();
@@ -1208,16 +1359,18 @@ function brandAndText(ctx, cmd) {
   const b = m && findBrand(m[1]);
   return b ? [b, m[2].trim()] : [db.defaultBrand, rest.trim()];
 }
+const tplKind = (field) => (field === 'tgTemplates' ? 'Telegram' : 'komentar');
 function tplAdd(b, field, t) {
   db.brands[b][field].push(t); save();
-  return `✅ Template komentar ${brandName(b)} #${db.brands[b][field].length}:\n${t}`;
+  return `✅ Template ${tplKind(field)} ${brandName(b)} #${db.brands[b][field].length}:\n${t}`;
 }
 function tplDel(b, field, n) {
   const list = db.brands[b]?.[field];
   if (!list?.[n - 1]) return `Nomor tidak ada. Lihat /tpls ${b}`;
-  if (list.length === 1) return 'Minimal harus ada 1 template.';
+  // Template Telegram boleh habis: komentar grup Telegram lalu memakai template komentar X
+  if (list.length === 1 && field === 'templates') return 'Minimal harus ada 1 template.';
   list.splice(n - 1, 1); save();
-  return `Dihapus dari ${brandName(b)}.`;
+  return `Dihapus dari ${brandName(b)}${field === 'tgTemplates' && !list.length ? ' — grup Telegram sekarang memakai template komentar X' : ''}.`;
 }
 function addTemplate(ctx, cmd, field) {
   const [b, t] = brandAndText(ctx, cmd);
@@ -1230,12 +1383,15 @@ function delTemplate(ctx, cmd, field) {
 }
 bot.command('addtpl', (ctx) => addTemplate(ctx, 'addtpl', 'templates'));
 bot.command('deltpl', (ctx) => delTemplate(ctx, 'deltpl', 'templates'));
+bot.command('addtgtpl', (ctx) => addTemplate(ctx, 'addtgtpl', 'tgTemplates'));
+bot.command('deltgtpl', (ctx) => delTemplate(ctx, 'deltgtpl', 'tgTemplates'));
 bot.command('tpls', (ctx) => {
   const b = findBrand(ctx.message.text.split(/\s+/)[1]);
   const show = (k) => {
     const v = db.brands[k];
     const list = (l) => l.map((t, i) => `${i + 1}. ${t}`).join('\n');
-    return `== ${v.name} ==\nKomentar:\n${list(v.templates)}`;
+    return `== ${v.name} ==\nKomentar:\n${list(v.templates)}\n\nKomentar grup Telegram:\n` +
+      (v.tgTemplates.length ? list(v.tgTemplates) : '(kosong — memakai template komentar di atas)');
   };
   return replyLong(ctx, (b ? [b] : Object.keys(db.brands)).map(show).join('\n\n'));
 });
@@ -1325,7 +1481,7 @@ function statusText() {
     `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\n` +
     (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (channel publik dibaca dari web t.me, tanpa admin)\n') +
     `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
-    `Channel laporan: ${db.reportChat ? '✅' : '❌'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
+    `Channel laporan: ${db.reportChat ? '✅' : '❌'} · Channel Telegram: ${db.tgReportChat ? '✅' : '❌'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
     `Opt-in: ${Object.keys(db.optins).length} (menunggu verifikasi: ${Object.keys(db.pending).length})\n` +
     `Pantau tweet opt-in: ${db.auto.watchOptins ? 'ON' : 'OFF'}\nAntrian: ${db.queue.length}\n` +
     `Komentar per project: ${db.filter.tweetsPerProject} tweet terbaru, maks. ${db.auto.maxRepliesPerProjectPerDay}/hari\n` +
@@ -1336,7 +1492,7 @@ function statusText() {
 // ---------- Panel tombol (/menu): semua pengaturan tanpa hafal perintah ----------
 const btn = (text, data) => Markup.button.callback(text, data);
 const HOME = [btn('⬅️ Menu utama', 'm:home')];
-const FIELD = { k: 'templates' };
+const FIELD = { k: 'templates', g: 'tgTemplates' };
 const awaiting = new Map(); // admin -> { kind, brand, field, at }: bot menunggu balasan teks
 const accIcon = (b) => (!clients[b] ? '❌' : isDown(b) ? '🛑' : limited(b) ? '⏸' : '✅');
 const chunk = (a, n) => a.reduce((r, x, i) => (i % n ? r[r.length - 1].push(x) : r.push([x]), r), []);
@@ -1361,6 +1517,7 @@ function homePanel() {
       [btn('🤝 Opt-in', 'm:opt'), btn('⏱ Jeda & Batas', 'm:lim')],
       [btn('🔎 Filter', 'm:flt'), btn('🤖 Otomatis', 'm:auto')],
       [btn(`📨 Channel laporan ${db.reportChat ? '✅' : '❌'}`, 'm:ask:report')],
+      [btn(`💬 Channel Telegram ${db.tgReportChat ? '✅' : '❌'}`, 'm:tg')],
       [db.paused ? btn('▶️ Jalankan lagi', 'm:resume') : btn('⏸ Pause semua', 'm:pause'), btn('❓ Bantuan', 'm:help')]
     ]
   };
@@ -1402,10 +1559,14 @@ function tplPanel(b) {
     (l.length > 15 ? `\n… +${l.length - 15} lagi (/tpls ${b})` : '');
   return {
     text: `📝 <b>Template komentar ${esc(v.name)}</b>\nBot memilih salah satu secara bergiliran saat berkomentar di tweet project opt-in.\n` +
-      `Variabel: {name} nama project · {handle} username X · {channel} nama channel\n\n${list(v.templates)}`,
+      `Variabel: {name} nama project · {handle} username X · {channel} nama channel\n\n${list(v.templates)}\n\n` +
+      `💬 <b>Komentar grup Telegram</b> (channel Telegram; {name} = nama grup, {handle} = username grup)\n` +
+      (v.tgTemplates.length ? list(v.tgTemplates) : '<i>Kosong — memakai template komentar di atas.</i>'),
     rows: [
       [btn('➕ Tambah komentar', `m:ask:tpl:${b}:k`)],
       ...chunk(v.templates.slice(0, 15).map((_, i) => btn(`🗑 ${i + 1}`, `m:tdel:${b}:k:${i + 1}`)), 5),
+      [btn('➕ Tambah komentar Telegram', `m:ask:tpl:${b}:g`)],
+      ...chunk(v.tgTemplates.slice(0, 15).map((_, i) => btn(`🗑 TG ${i + 1}`, `m:tdel:${b}:g:${i + 1}`)), 5),
       [btn('⬅️ Pilih brand', 'm:tplb'), ...HOME]
     ]
   };
@@ -1426,6 +1587,27 @@ function optPanel() {
           `  Project klik → kirim username X → pasang kode di bio → otomatis aktif (menunggu verifikasi: ${Object.keys(db.pending).length}).`
         : '• Atau biarkan project daftar sendiri lewat link opt-in 1-klik: nyalakan Opt-in publik di 🤖 Otomatis.'),
     rows: [[btn('➕ Opt-in manual', 'm:ask:optin'), btn('🗑 Hapus opt-in', 'm:ask:deloptin')], HOME]
+  };
+}
+function tgPanel() {
+  const tpl = Object.keys(db.brands).map((b) => `${esc(brandName(b))}: ${db.brands[b].tgTemplates.length
+    ? `${db.brands[b].tgTemplates.length} template Telegram` : `memakai template komentar (${db.brands[b].templates.length})`}`);
+  const n = db.tgIgnore.length;
+  return {
+    text: '💬 <b>Channel Telegram</b>\nChannel khusus link grup Telegram project, terpisah dari laporan X. ' +
+      'Setiap post channel target yang berisi link grup/channel Telegram project (t.me/…) dikirim ke sini dengan komentar per brand: ' +
+      '📋 Salin → 💬 Buka grup → tempel. Bot tidak pernah menulis di grup orang lain.\n\n' +
+      `Channel: ${db.tgReportChat ? `✅ <code>${esc(String(db.tgReportChat))}</code>` : '❌ belum diatur — tekan 📨 Atur channel'}\n\n` +
+      `• Bot mengecek tiap link di halaman t.me: akun pribadi, bot, dan link mati tidak dilaporkan. ` +
+      'Link post, @mention (sering handle X), dan link ke channel target sendiri dilewati.\n' +
+      `• Satu link dilaporkan maks. 1x per ${db.filter.cooldownDays} hari (🔎 Filter → Jeda project yang sama).\n` +
+      `• 🚫 Abaikan di laporan: link itu tidak dilaporkan lagi (diabaikan: ${n}).\n\n` +
+      `<b>Template</b> (📝 Template → brand)\n${tpl.join('\n')}`,
+    rows: [
+      [btn('📨 Atur channel', 'm:ask:tgreport'), ...(db.tgReportChat ? [btn('🛑 Matikan', 'm:tgoff')] : [])],
+      [btn('📝 Template Telegram', 'm:tplb'), ...(n ? [btn(`♻️ Kosongkan abaikan (${n})`, 'm:tgclr')] : [])],
+      HOME
+    ]
   };
 }
 const GAPS = [[30, 90], [60, 180], [180, 360], [300, 600]];
@@ -1614,15 +1796,25 @@ const PROMPTS = {
     'Setelah itu pilih cara menghubungkan akun X-nya. /batal untuk batal.',
   channel: () => '📢 Kirim username channel (contoh <code>@namachannel</code>) atau link <code>https://t.me/namachannel</code>\n' +
     'Channel publik milik siapa pun bisa — bot tidak perlu jadi admin. /batal untuk batal.',
-  tpl: (b) => `📝 Kirim teks template komentar untuk <b>${esc(brandName(b))}</b>.\n` +
-    'Variabel: <code>{name}</code> nama project, <code>{handle}</code> username X, <code>{channel}</code> nama channel.\n' +
-    'Contoh: <code>Love seeing {name} keep shipping 🚀</code>\n/batal untuk batal.',
+  tpl: (b, f) => (f === 'g'
+    ? `💬 Kirim teks template komentar <b>grup Telegram</b> untuk <b>${esc(brandName(b))}</b>.\n` +
+      'Variabel: <code>{name}</code> nama grup, <code>{handle}</code> username grup, <code>{channel}</code> nama channel sumber.\n' +
+      'Contoh: <code>gm {name} fam 🔥 kapan listing?</code>\n/batal untuk batal.'
+    : `📝 Kirim teks template komentar untuk <b>${esc(brandName(b))}</b>.\n` +
+      'Variabel: <code>{name}</code> nama project, <code>{handle}</code> username X, <code>{channel}</code> nama channel.\n' +
+      'Contoh: <code>Love seeing {name} keep shipping 🚀</code>\n/batal untuk batal.'),
   optin: () => '🤝 Kirim @handle X project yang sudah setuju (mis. beli paket listing). /batal untuk batal.',
   deloptin: () => '🗑 Kirim @handle project yang opt-in-nya mau dihapus. /batal untuk batal.',
   report: () => '📨 <b>Channel laporan</b>\nSemua laporan bot (komentar terkirim, project baru, error, ringkasan harian) dikirim ke sini.\n' +
     `Sekarang: ${db.reportChat ? `<code>${esc(String(db.reportChat))}</code>` : 'belum diatur'}\n\n` +
     '1. Jadikan bot ADMIN di channel laporan (izin Post Messages).\n' +
     '2. Kirim ID channel itu di sini, contoh <code>-1001234567890</code> (atau @username channel).\n\n' +
+    'Bot langsung mengirim pesan tes ke sana. /batal untuk batal.',
+  tgreport: () => '💬 <b>Channel Telegram</b>\nLink grup Telegram project dari channel target dikirim ke sini (terpisah dari laporan X).\n' +
+    `Sekarang: ${db.tgReportChat ? `<code>${esc(String(db.tgReportChat))}</code>` : 'belum diatur'}\n\n` +
+    '1. Buat channel baru, jadikan bot ADMIN (izin Post Messages).\n' +
+    '2. Kirim ID channel itu di sini, contoh <code>-1001234567890</code> (atau @username channel).\n' +
+    '   Bisa juga: posting <code>/settgreport</code> di channel itu.\n\n' +
     'Bot langsung mengirim pesan tes ke sana. /batal untuk batal.',
   blacklist: () => '✏️ Kirim kata terlarang dipisah koma, contoh: <code>scam, rug, presale</code>\nKirim <code>-</code> untuk mengosongkan. /batal untuk batal.'
 };
@@ -1722,13 +1914,14 @@ async function handleInput(ctx, a) {
       await ctx.reply(`🗑 Opt-in @${h} dihapus.`);
       return showPanel(ctx, optPanel(), false);
     }
-    case 'report': {
+    case 'report':
+    case 'tgreport': {
       const t = reportTarget(text.split(/\s+/)[0]);
       if (!t) return again('Format salah. Kirim ID channel diawali -100, contoh -1001234567890. Kirim lagi, atau /batal');
-      const r = await setReportChat(t);
+      const r = await setReportChat(t, a.kind === 'tgreport' ? 'tgReportChat' : 'reportChat');
       if (r.startsWith('❌')) return again(`${r}\nKirim lagi setelah diperbaiki, atau /batal`);
       await ctx.reply(r);
-      return showPanel(ctx, homePanel(), false);
+      return showPanel(ctx, a.kind === 'tgreport' ? tgPanel() : homePanel(), false);
     }
     case 'blacklist':
       db.filter.blacklist = text === '-' ? [] : text.split(',').map((w) => w.trim()).filter(Boolean);
@@ -1788,6 +1981,9 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
       break;
     }
     case 'opt': panel = optPanel(); break;
+    case 'tg': panel = tgPanel(); break;
+    case 'tgoff': db.tgReportChat = null; save(); toast = '🛑 Channel Telegram dimatikan'; panel = tgPanel(); break;
+    case 'tgclr': db.tgIgnore = []; save(); toast = '♻️ Daftar abaikan dikosongkan'; panel = tgPanel(); break;
     case 'optadd': {
       const [b, h] = args;
       if (findBrand(b) && validHandle(h)) toast = addOptinManual(h, b);

@@ -917,6 +917,18 @@ await test('/jeda: atur jeda dalam menit', async () => {
   }
 });
 
+await test('channel Telegram (akun listener): link grup Telegram project → channel khusus, terpisah dari laporan X', async () => {
+  const TGCH = -1004440002;
+  db.tgReportChat = TGCH;
+  M.tgPages.listenergroup = { title: 'Listener Group', extra: '2 000 members' };
+  post(alpha, 'Gem! TG: https://t.me/ListenerGroup · calls t.me/alpha/5 t.me/beta · bot t.me/BonkBot_bot?start=ref');
+  const r = await until(() => messagesTo(TGCH).find((t) => t.includes('siap dikomentari')), 'laporan Telegram');
+  assert.match(r, /^💬 <b>@ListenerGroup<\/b> siap dikomentari\n👥 Grup · Listener Group · 2 000 anggota\nSumber: Alpha Calls\n/);
+  await sleep(200);
+  assert.equal(messagesTo(TGCH).length, 1);
+  assert.ok(!reports().some((t) => t.includes('ListenerGroup')));
+});
+
 await test('/status lengkap', async () => {
   const s = await dm(ADMIN, '/status');
   assert.match(s, /🟢 jalan/);
@@ -929,6 +941,7 @@ await test('ringkasan harian + backup otomatis', async () => {
   db.lastDaily = null;
   const r = await reportMatching('Ringkasan harian');
   assert.match(r, /Komentar terkirim: \d+/);
+  assert.match(r, /Link grup Telegram dilaporkan: 1\n/);
   assert.match(r, /Fourtis: ✅ @fourtisbot/);
   assert.match(r, /Dexvra: /);
   const backups = fs.readdirSync(path.join(tmp, 'backups'));

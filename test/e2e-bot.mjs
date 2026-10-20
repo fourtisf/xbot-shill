@@ -261,6 +261,183 @@ await test('/status menampilkan mode bot saja', async () => {
   assert.equal(db.channels.length, 2);
 });
 
+// ---------- Channel Telegram: link grup Telegram project → channel khusus ----------
+const TGCH = -1004440001;
+msgId = Math.max(msgId, db.lastSeen['@alpha'] || 0); // post baru @alpha harus lebih baru dari yang sudah dibaca
+const tgReports = () => messagesTo(TGCH).filter((t) => t.includes('siap dikomentari'));
+const tgPayloads = () => sent().filter((c) => c.payload.chat_id === TGCH && c.payload.text.includes('siap dikomentari')).map((c) => c.payload);
+const tgReportFor = (head) => until(() => tgPayloads().find((p) => p.text.startsWith(`💬 <b>${head}</b> siap dikomentari`)), `laporan Telegram ${head}`);
+const tmeLookups = (name) => M.webCalls.filter((u) => u.toLowerCase() === `https://t.me/${name}`.toLowerCase()).length;
+Object.assign(M.tgPages, {
+  pepeportal: { title: 'Pepe Portal', extra: '12 345 members, 678 online' },
+  dogenews: { title: 'Doge News', extra: '5 432 subscribers', verified: true },
+  '+AbCdEfGhIjKlMnOp': { title: 'Secret Gem Chat', extra: '321 members' },
+  hiddengroup: { title: 'Hidden Group', extra: '99 members' },
+  someuser: { title: 'Some Dev', extra: '@someuser' },
+  offgroup: { title: 'Off Group', extra: '10 members' }
+});
+
+await test('Channel Telegram belum diatur → link grup Telegram tidak dicek / dilaporkan (fitur mati)', async () => {
+  await channelPost(alpha, 'TG: https://t.me/OffGroup');
+  await sleep(300);
+  assert.equal(tmeLookups('offgroup'), 0);
+});
+
+await test('Channel Telegram: atur lewat tombol (dicek dengan pesan tes), panel menjelaskan cara kerja', async () => {
+  assert.ok(dataOf(await tap(ADMIN, 'm:home')).includes('m:tg'));
+  let p = await tap(ADMIN, 'm:tg');
+  assert.match(p.text, /Channel Telegram<\/b>\nChannel khusus link grup Telegram project, terpisah dari laporan X/);
+  assert.match(p.text, /❌ belum diatur/);
+  assert.ok(!dataOf(p).includes('m:tgoff'));
+  await tap(ADMIN, 'm:ask:tgreport');
+  assert.match(lastPanel(ADMIN).text, /Jadikan bot ADMIN|jadikan bot ADMIN/);
+  M.unreachable = [String(TGCH)];
+  assert.match(await dm(ADMIN, String(TGCH)), /Bot tidak bisa mengirim pesan ke -1004440001/);
+  assert.equal(db.tgReportChat, null);
+  M.unreachable = [];
+  M.botChats[String(TGCH)] = { id: TGCH, type: 'channel', title: 'Shill Telegram' };
+  await dm(ADMIN, String(TGCH));
+  assert.equal(db.tgReportChat, TGCH);
+  assert.ok(messagesTo(TGCH).some((m) => m.startsWith('💬 Channel Telegram aktif')));
+  assert.ok(messagesTo(ADMIN).some((m) => m.includes('✅ Link grup Telegram sekarang dikirim ke Shill Telegram')));
+  p = lastPanel(ADMIN);
+  assert.match(p.text, /Channel: ✅ <code>-1004440001<\/code>/);
+  assert.ok(dataOf(p).includes('m:tgoff'));
+  assert.equal(db.reportChat, REPORT, 'channel laporan X tidak berubah');
+  assert.match(await dm(ADMIN, '/status'), /Channel laporan: ✅ · Channel Telegram: ✅/);
+});
+
+await test('Channel Telegram: link grup / channel / undangan → "siap dikomentari" per brand; bot, akun pribadi, link post, channel target, @mention dilewati', async () => {
+  assert.match(await dm(ADMIN, '/addtgtpl dexvra gm {name} 🔥 Dexvra listing soon?'), /Template Telegram Dexvra #1/);
+  const text = 'New gem 🚀\nX: https://x.com/TgXProj\nTG: https://t.me/PepePortal\nNews: t.me/dogenews\nVIP: https://t.me/+AbCdEfGhIjKlMnOp\n' +
+    'Buy: https://t.me/maestro_bot?start=r-abc https://t.me/Solana_TrojanBot?start=x\nDev: t.me/someuser\n' +
+    'Src: https://t.me/alpha/55 t.me/alpha t.me/beta\nPing @MentionGroup\nGhost: t.me/ghostgroup123\nCall t.me/+6281234567890';
+  await channelPost(alpha, `Group ${text}`, { entities: [{ type: 'text_link', offset: 0, length: 5, url: 'https://t.me/HiddenGroup' }] });
+  const pepe = await tgReportFor('@PepePortal');
+  assert.match(pepe.text, /^💬 <b>@PepePortal<\/b> siap dikomentari\n👥 Grup · Pepe Portal · 12 345 anggota\nSumber: Alpha Calls\n/);
+  assert.match(pepe.text, /\nKomentar Fourtis: "[^"\n]*Pepe Portal[^"\n]*"\nKomentar Dexvra: "gm Pepe Portal 🔥 Dexvra listing soon\?"$/);
+  const kb = pepe.reply_markup.inline_keyboard;
+  assert.deepEqual(kb[0].map((b) => b.text), ['📋 Salin · Fourtis', '📋 Salin · Dexvra']);
+  assert.equal(kb[0][1].copy_text.text, 'gm Pepe Portal 🔥 Dexvra listing soon?');
+  assert.deepEqual(kb[1].map(({ text, url, callback_data }) => ({ text, url, callback_data })),
+    [{ text: '💬 Buka grup', url: 'https://t.me/PepePortal', callback_data: undefined }, { text: '🚫 Abaikan', url: undefined, callback_data: 'tgi:pepeportal' }]);
+  assert.match((await tgReportFor('@dogenews')).text, /\n📢 Channel · Doge News · 5 432 subscriber\n/);
+  assert.equal((await tgReportFor('@dogenews')).reply_markup.inline_keyboard[1][0].text, '📢 Buka channel');
+  const vip = await tgReportFor('Secret Gem Chat');
+  assert.match(vip.text, /^💬 <b>Secret Gem Chat<\/b> siap dikomentari\n🔒 Grup privat · 321 anggota\n/);
+  assert.equal(vip.reply_markup.inline_keyboard[1][0].url, 'https://t.me/+AbCdEfGhIjKlMnOp');
+  await tgReportFor('@HiddenGroup'); // link tersembunyi (text_link)
+  await sleep(300);
+  assert.equal(tgReports().length, 4, tgReports().join('\n---\n'));
+  for (const n of ['maestro_bot', 'solana_trojanbot', 'alpha', 'beta', 'mentiongroup', '+6281234567890']) assert.equal(tmeLookups(n), 0, n);
+  assert.equal(tmeLookups('someuser') + tmeLookups('ghostgroup123'), 2, 'dicek di t.me, lalu tidak dilaporkan (akun pribadi / tidak ada)');
+  // Link X tetap ke channel laporan X, link Telegram tidak masuk ke sana
+  assert.match(await reportMatching('<b>@tgxproj</b> belum opt-in'), /Sumber: Alpha Calls/);
+  assert.ok(!reports().some((r) => r.includes('PepePortal')));
+  assert.ok(!tgReports().some((r) => r.includes('tgxproj')));
+});
+
+async function tapIn(chat, from, data, markup) {
+  await M.bot.handleUpdate({
+    update_id: updateId++,
+    callback_query: {
+      id: String(updateId), from: { id: from, is_bot: false, first_name: 'u' }, chat_instance: '1', data,
+      message: { message_id: 9, date: unix(Date.now()), chat: { id: chat, type: 'channel', title: 'Shill Telegram' }, text: 'r', reply_markup: markup }
+    }
+  });
+  await sleep(60);
+}
+
+await test('Channel Telegram: link yang sama tidak dobel; 🚫 Abaikan (hanya admin); t.me error → tetap dilaporkan; gagal kirim → dicoba lagi', async () => {
+  await channelPost(alpha, 'lagi: t.me/PepePortal');
+  await sleep(300);
+  assert.equal(tgReports().filter((r) => r.includes('@PepePortal')).length, 1, 'cooldown');
+  const markup = (await tgReportFor('@PepePortal')).reply_markup;
+  await tapIn(TGCH, 222, 'tgi:pepeportal', markup);
+  assert.equal(lastAnswer().text, 'Khusus admin');
+  assert.ok(!db.tgIgnore.includes('pepeportal'));
+  await tapIn(TGCH, ADMIN, 'tgi:pepeportal', markup);
+  assert.deepEqual(db.tgIgnore, ['pepeportal']);
+  assert.match(lastAnswer().text, /tidak dilaporkan lagi/);
+  const edit = M.botCalls.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).payload.reply_markup.inline_keyboard;
+  assert.deepEqual(edit[1].map((b) => b.text), ['💬 Buka grup', '🚫 Diabaikan']);
+  assert.equal(edit[0][0].copy_text.text, markup.inline_keyboard[0][0].copy_text.text, 'tombol Salin tetap');
+  delete db.tgHistory.pepeportal; // cooldown habis: tetap tidak dilaporkan karena diabaikan
+  await channelPost(alpha, 'lagi: t.me/PepePortal');
+  await sleep(300);
+  assert.equal(tgReports().filter((r) => r.includes('@PepePortal')).length, 1);
+  assert.match((await tap(ADMIN, 'm:tg')).text, /diabaikan: 1/);
+  // t.me tidak bisa dibuka → laporan tanpa info, tombol umum
+  M.tgPages.downgroup = { down: true };
+  await channelPost(alpha, 'TG t.me/DownGroup');
+  const down = await tgReportFor('@DownGroup');
+  assert.match(down.text, /^💬 <b>@DownGroup<\/b> siap dikomentari\nSumber: Alpha Calls\n/);
+  assert.equal(down.reply_markup.inline_keyboard[1][0].text, '💬 Buka di Telegram');
+  // Channel Telegram tidak bisa dikirimi → 1 peringatan di channel laporan; link dicoba lagi saat muncul lagi
+  M.tgPages.retrygroup = { title: 'Retry Group', extra: '7 members' };
+  M.unreachable = [String(TGCH)];
+  await channelPost(alpha, 'TG t.me/RetryGroup');
+  await reportMatching('Gagal mengirim ke <b>channel Telegram</b>');
+  assert.equal(db.tgHistory.retrygroup, undefined);
+  M.unreachable = [];
+  await channelPost(alpha, 'TG lagi t.me/RetryGroup');
+  await tgReportFor('@RetryGroup');
+});
+
+await test('Channel Telegram dari web publik: link teks & tombol terbaca; @mention dan nama channel sumber diabaikan', async () => {
+  M.botChats['@theta'] = { id: -1001008, type: 'channel', username: 'theta', title: 'Theta Calls' };
+  M.web.theta = { title: 'Theta Calls', posts: [{ id: 1, html: 'hi', date: Date.now() }] };
+  Object.assign(M.tgPages, { webgroup: { title: 'Web Group', extra: '1 200 members' }, btngroup: { title: 'Btn Group', extra: '30 members' },
+    mentiongroup2: { title: 'Mention Group', extra: '50 members' } });
+  await dm(ADMIN, '/addchannel @theta');
+  M.web.theta.posts.push({ id: 2, date: Date.now(), buttons: [['💬 Telegram', 'https://t.me/BtnGroup']],
+    html: 'Join <a href="https://t.me/WebGroup" target="_blank" rel="noopener">t.me/WebGroup</a> · admin <a href="https://t.me/MentionGroup2">@MentionGroup2</a>' });
+  await tgReportFor('@WebGroup');
+  assert.match((await tgReportFor('@BtnGroup')).text, /Sumber: Theta Calls/);
+  await sleep(300);
+  assert.equal(tmeLookups('mentiongroup2') + tmeLookups('theta'), 0);
+  await dm(ADMIN, '/delchannel @theta');
+});
+
+await test('Template Telegram: tambah/hapus lewat panel & perintah, /tpls; /settgreport; 🛑 Matikan', async () => {
+  let p = await tap(ADMIN, 'm:tpl:dexvra');
+  assert.match(p.text, /Komentar grup Telegram<\/b>[^\n]*\n1\. gm \{name\} 🔥 Dexvra listing soon\?/);
+  assert.ok(dataOf(p).includes('m:ask:tpl:dexvra:g') && dataOf(p).includes('m:tdel:dexvra:g:1'));
+  assert.match((await tap(ADMIN, 'm:tpl:fourtis')).text, /Kosong — memakai template komentar di atas/);
+  await tap(ADMIN, 'm:ask:tpl:fourtis:g');
+  assert.match(lastPanel(ADMIN).text, /template komentar <b>grup Telegram<\/b> untuk <b>Fourtis<\/b>/);
+  await dm(ADMIN, 'Fourtis TG {name} 🚀');
+  assert.deepEqual(db.brands.fourtis.tgTemplates, ['Fourtis TG {name} 🚀']);
+  assert.match(lastPanel(ADMIN).text, /1\. Fourtis TG \{name\} 🚀/);
+  M.tgPages.tplgroup = { title: 'Tpl Group', extra: '5 members' };
+  await channelPost(alpha, 't.me/TplGroup');
+  assert.match((await tgReportFor('@TplGroup')).text, /Komentar Fourtis: "Fourtis TG Tpl Group 🚀"/);
+  await tap(ADMIN, 'm:tdel:fourtis:g:1');
+  assert.match(lastAnswer().text, /memakai template komentar X/);
+  assert.deepEqual(db.brands.fourtis.tgTemplates, []);
+  assert.match(await dm(ADMIN, '/tpls dexvra'), /Komentar grup Telegram:\n1\. gm \{name\}/);
+  assert.match(await dm(ADMIN, '/deltgtpl dexvra 9'), /Nomor tidak ada/);
+  // /settgreport: dicek dulu; di channel: hanya kalau ADMIN_IDS admin di sana
+  M.unreachable = ['-1009999998'];
+  assert.match(await dm(ADMIN, '/settgreport -1009999998'), /Bot tidak bisa mengirim[\s\S]*Channel Telegram lama tetap dipakai/);
+  M.unreachable = [];
+  assert.equal(db.tgReportChat, TGCH);
+  M.chatAdmins[-1008888] = [ADMIN];
+  await M.bot.handleUpdate({ update_id: updateId++, channel_post: { message_id: 2, date: unix(Date.now()), chat: { id: -1008888, type: 'channel', title: 'TG2' }, text: '/settgreport', entities: [{ type: 'bot_command', offset: 0, length: 12 }] } });
+  await until(() => db.tgReportChat === -1008888, 'tgReportChat lewat post channel');
+  assert.equal(db.reportChat, REPORT);
+  db.tgReportChat = TGCH;
+  p = await tap(ADMIN, 'm:tgoff');
+  assert.equal(db.tgReportChat, null);
+  assert.match(p.text, /❌ belum diatur/);
+  M.tgPages.aftergroup = { title: 'After', extra: '5 members' };
+  await channelPost(alpha, 't.me/AfterGroup');
+  await sleep(300);
+  assert.equal(tmeLookups('aftergroup'), 0);
+  p = await tap(ADMIN, 'm:tgclr');
+  assert.deepEqual(db.tgIgnore, []);
+});
+
 // ---------- Menu "/" dan panel tombol ----------
 await test('menu "/" terdaftar: publik untuk project, lengkap untuk admin', async () => {
   const calls = M.botCalls.filter((c) => c.method === 'setMyCommands');
@@ -572,7 +749,7 @@ await test('setiap perintah admin membalas tanpa error', async () => {
     '/help', '/menu', '/status', '/accounts', '/xstatus', '/channels', '/tpls', '/tpls dexvra', '/optins',
     '/filter', '/filter minAgeDays 7', '/limits', '/limits maxPerDay 60', '/auto', '/auto dailyReportHour 8',
     '/jeda', '/jeda 2 4', '/jeda project 3', '/jeda abc',
-    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99',
+    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99', '/addtgtpl dexvra Tur TG {name}', '/deltgtpl dexvra 99', '/addtgtpl', '/settgreport abc',
     '/addoptin @TourProj dexvra', '/addoptin bad-handle', '/deloptin @tourproj',
     '/addchannel @tourch', '/delchannel @tourch', '/addchannel', '/addchannel @x nobrand',
     '/pause', '/resume', '/resume dexvra', '/resume nobrand',
@@ -588,6 +765,7 @@ await test('setiap perintah admin membalas tanpa error', async () => {
   }
   assert.deepEqual(silent, [], 'perintah tanpa balasan');
   db.brands.dexvra.templates = db.brands.dexvra.templates.filter((t) => !t.startsWith('Tur '));
+  db.brands.dexvra.tgTemplates = db.brands.dexvra.tgTemplates.filter((t) => !t.startsWith('Tur '));
   Object.assign(db, JSON.parse(snap));
   assert.equal(db.paused, false);
 });
@@ -626,7 +804,8 @@ await test('Channel laporan lewat tombol: ID dicek dulu dengan pesan tes; ID sal
 });
 
 await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', async () => {
-  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands });
+  const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands,
+    tgReportChat: db.tgReportChat, tgIgnore: db.tgIgnore });
   const skip = /^m:(accdelok|chdel|tdel|optadd):/; // aksi hapus/tambah diuji terpisah
   const seen = new Set(), queue = ['m:home'], noAnswer = [], noPanel = [];
   while (queue.length && seen.size < 300) {

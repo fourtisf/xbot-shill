@@ -10,6 +10,7 @@ export function newBrand(key, name = key[0].toUpperCase() + key.slice(1)) {
     name,
     x: null, // { appKey, appSecret, accessToken, accessSecret }
     username: null,
+    tgTemplates: [], // komentar untuk grup Telegram (channel Telegram); kosong = memakai templates
     templates: [
       `Big things happening at {name} 🔥 watching this one closely`,
       `Love seeing {name} keep shipping 🚀`,
@@ -33,6 +34,9 @@ const defaults = {
   },
   channels: [], // '@username' atau id numerik
   reportChat: null,
+  tgReportChat: null, // channel Telegram: link grup/channel Telegram project dari channel target (null = mati)
+  tgHistory: {}, // link Telegram (username / +kode undangan) -> waktu terakhir dilaporkan
+  tgIgnore: [], // link Telegram yang tidak dilaporkan lagi (tombol 🚫 Abaikan)
   paused: false, // pause manual (/pause)
   pausedUntil: {}, // brand -> pause otomatis karena rate limit X, jalan lagi sendiri setelah waktu ini
   optins: {}, // handle -> { at, via, by, brand }
@@ -135,7 +139,7 @@ function load() {
   // Tweet bot (akun brand tweet sendiri tentang project) dihapus: buang sisa pengaturan & tweet yang masih antre.
   // Brand channel ikut dihapus — dulu hanya menentukan akun untuk tweet bot; komentar selalu dari brand opt-in project
   d.queue = d.queue.filter((j) => j.type === 'reply');
-  for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; }
+  for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; v.tgTemplates ||= []; }
   for (const k of Object.keys(d.tplLog || {})) if (k.startsWith('#')) delete d.tplLog[k];
   for (const k of ['channelBrand', 'tweetBotDefaultOff']) delete d[k];
   return d;
