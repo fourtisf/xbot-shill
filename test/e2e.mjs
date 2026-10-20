@@ -942,10 +942,11 @@ await test('ringkasan harian + backup otomatis', async () => {
   const r = await reportMatching('Ringkasan harian');
   assert.match(r, /Komentar terkirim dari akun X: \d+/);
   // Tiap channel hanya jumlahnya sendiri: channel laporan → total X saja, channel Telegram → total Telegram saja
-  assert.match(r, /\(24 jam terakhir\)\n🐦 <b>Total project X diposting: [1-9]\d*<\/b>\nSumber: [^\n]+\n\nKomentar terkirim/);
+  assert.match(r, /\(24 jam terakhir\)\n🐦 <b>Total akun X dari channel sumber: [1-9]\d*<\/b>\n• Alpha Calls: [1-9]\d*\n[\s\S]*\n\nKomentar terkirim/);
   assert.doesNotMatch(r, /Telegram/);
   const tg = messagesTo(db.tgReportChat).find((t) => t.includes('Ringkasan harian'));
-  assert.equal(tg, '📊 <b>Ringkasan harian</b> (24 jam terakhir)\n💬 <b>Total link Telegram diposting: 1</b>\n👥 1 grup · 📢 0 channel\nSumber: Alpha Calls 1');
+  assert.match(tg, /^📊 <b>Ringkasan harian<\/b> \(24 jam terakhir\)\n💬 <b>Total link Telegram dari channel sumber: 1<\/b>\n• Alpha Calls: 1\n/);
+  assert.doesNotMatch(tg, /akun X/);
   assert.match(r, /Fourtis: ✅ @fourtisbot/);
   assert.match(r, /Dexvra: /);
   const backups = fs.readdirSync(path.join(tmp, 'backups'));

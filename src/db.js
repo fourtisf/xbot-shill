@@ -37,7 +37,7 @@ const defaults = {
   tgReportChat: null, // channel Telegram: link grup/channel Telegram project dari channel target (null = mati)
   tgHistory: {}, // link Telegram (username / +kode undangan) -> waktu terakhir dilaporkan
   tgIgnore: [], // link Telegram yang tidak dilaporkan lagi (tombol 🚫 Abaikan)
-  sentLog: [], // laporan "siap dikomentari" 2 hari terakhir: { at, ch: 'x' | 'tg', src, kind? } → laporan 24 jam per channel
+  srcLog: [], // akun X & link Telegram yang di-post channel sumber, 2 hari terakhir: { at, ch, src, t: 'x' | 'tg', id }
   paused: false, // pause manual (/pause)
   pausedUntil: {}, // brand -> pause otomatis karena rate limit X, jalan lagi sendiri setelah waktu ini
   optins: {}, // handle -> { at, via, by, brand }
@@ -142,7 +142,7 @@ function load() {
   d.queue = d.queue.filter((j) => j.type === 'reply');
   for (const v of Object.values(d.brands)) { delete v.ownTweetEnabled; delete v.tweetTemplates; v.tgTemplates ||= []; }
   for (const k of Object.keys(d.tplLog || {})) if (k.startsWith('#')) delete d.tplLog[k];
-  for (const k of ['channelBrand', 'tweetBotDefaultOff']) delete d[k];
+  for (const k of ['channelBrand', 'tweetBotDefaultOff', 'sentLog']) delete d[k];
   return d;
 }
 

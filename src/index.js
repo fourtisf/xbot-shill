@@ -71,33 +71,33 @@ async function sendTo(chat, html, buttons) {
 }
 const report = (html, buttons) => sendTo(db.reportChat, html, buttons);
 
-// ---------- Laporan 24 jam: berapa "siap dikomentari" di channel X & channel Telegram ----------
-// Dicatat per laporan yang benar-benar terkirim (tetap benar walau bot restart); disimpan 2 hari
-function logSent(ch, src, kind) {
-  if (db.sentLog[0]?.at < Date.now() - 2 * DAY) db.sentLog = db.sentLog.filter((r) => r.at > Date.now() - 2 * DAY);
-  db.sentLog.push({ at: Date.now(), ch, src, ...(kind ? { kind } : {}) });
-  save();
+// ---------- Laporan 24 jam: berapa akun X & link Telegram yang di-post tiap channel sumber ----------
+// Dicatat dari setiap post channel sumber (bukan dari laporan bot), dengan jam post; disimpan 2 hari
+function logSource(at, ch, src, handles, links) {
+  if (db.srcLog[0]?.at < Date.now() - 2 * DAY) db.srcLog = db.srcLog.filter((r) => r.at > Date.now() - 2 * DAY);
+  for (const id of handles) db.srcLog.push({ at, ch, src, t: 'x', id });
+  for (const l of links) db.srcLog.push({ at, ch, src, t: 'tg', id: l.key });
 }
-function topSources(rows, n = 5) {
-  const count = new Map();
-  for (const r of rows) count.set(r.src, (count.get(r.src) || 0) + 1);
-  const top = [...count].sort((a, b) => b[1] - a[1]);
-  return top.slice(0, n).map(([src, k]) => `${esc(src)} ${k}`).join(' · ') + (top.length > n ? ` · +${top.length - n} lainnya` : '');
+// Total akun X (t = 'x') atau link Telegram (t = 'tg') dalam 24 jam + rincian per channel sumber (semua channel
+// target, yang 0 juga). Akun yang sama di-post dua kali / di dua channel dihitung sekali di total
+function dayCount(t) {
+  const rows = db.srcLog.filter((r) => r.t === t && r.at > Date.now() - DAY);
+  const per = new Map(db.channels.map((c) => [c, { src: targets.get(c)?.title || c, ids: new Set() }]));
+  for (const r of rows) {
+    if (!per.has(r.ch)) per.set(r.ch, { src: r.src, ids: new Set() }); // channel yang sudah dihapus
+    per.get(r.ch).ids.add(r.id);
+  }
+  const total = new Set(rows.map((r) => r.id)).size;
+  const list = [...per.values()].sort((a, b) => b.ids.size - a.ids.size);
+  const sum = list.reduce((n, e) => n + e.ids.size, 0);
+  return `${t === 'x' ? '🐦 <b>Total akun X' : '💬 <b>Total link Telegram'} dari channel sumber: ${total}</b>\n` +
+    list.slice(0, 30).map((e) => `• ${esc(e.src)}: ${e.ids.size}`).join('\n') +
+    (list.length > 30 ? `\n… +${list.length - 30} channel lainnya` : '') +
+    (sum > total ? `\n<i>${t === 'x' ? 'Akun' : 'Link'} yang sama di beberapa channel dihitung 1x di total.</i>` : '');
 }
-// Total yang di-post ke satu channel ('x' atau 'tg') dalam 24 jam: tiap channel hanya melihat angkanya sendiri.
-// Satu project / link Telegram maks. 1 laporan per cooldownDays, jadi total = jumlah project / link yang berbeda
-function dayCount(ch) {
-  const rows = db.sentLog.filter((r) => r.at > Date.now() - DAY && r.ch === ch);
-  const src = rows.length ? `\nSumber: ${topSources(rows)}` : '';
-  if (ch === 'x') return `🐦 <b>Total project X diposting: ${rows.length}</b>${src}`;
-  if (!db.tgReportChat && !rows.length) return '💬 Channel Telegram belum diatur (/menu → 💬 Channel Telegram)';
-  const kinds = (k) => rows.filter((r) => r.kind === k).length;
-  return `💬 <b>Total link Telegram diposting: ${rows.length}</b>` +
-    (rows.length ? `\n👥 ${kinds('group')} grup · 📢 ${kinds('channel')} channel` : '') + src;
-}
-// DM admin (/laporan): kedua channel, masing-masing terpisah
-const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nTotal laporan "siap dikomentari" yang di-post ke tiap channel.\n\n` +
-  `${dayCount('x')}\n\n${dayCount('tg')}`;
+// DM admin (/laporan): X & Telegram, masing-masing terpisah
+const dayReportText = () => `📈 <b>Laporan 24 jam terakhir</b>\nAkun X &amp; link Telegram yang di-post channel sumber.\n\n` +
+  `${dayCount('x')}\n\n${dayCount('tg')}` + (db.tgReportChat ? '' : '\n<i>Channel Telegram belum diatur (/menu → 💬 Channel Telegram).</i>');
 
 // ---------- Error X: jeda otomatis per akun saat rate limit, ulangi error sementara ----------
 const limited = (b) => Date.now() < (db.pausedUntil[b] || 0);
@@ -416,7 +416,7 @@ async function notOptedIn(handle, channelName) {
 // Laporan "siap dikomentari" project belum opt-in: komentar per brand (📋 Salin) + link ke tweet terbarunya, atau ke
 // profilnya kalau tweet tidak dicari (mode hemat: tanpa API X) / tidak bisa dicari (kredit habis, error X).
 // Reply, like & follow dilakukan admin di X — tidak ada aksi lewat API dari laporan ini
-async function commentReport(handle, channelName, brands, { user, tweet } = {}) {
+function commentReport(handle, channelName, brands, { user, tweet } = {}) {
   const username = user?.username || handle;
   const vars = { name: user?.name || handle, handle: username, channel: channelName };
   const texts = Object.fromEntries(brands.map((b) => {
@@ -426,7 +426,7 @@ async function commentReport(handle, channelName, brands, { user, tweet } = {}) 
   }));
   save(); stat('manual');
   const multi = brands.length > 1;
-  const sent = await report(
+  return report(
     `💬 <b>@${esc(username)}</b> siap dikomentari\nSumber: ${esc(channelName)}\n` +
     (tweet ? `Tweet: "${esc(tweet.text.slice(0, 90))}…"\n` : '') +
     brands.map((b) => `Komentar ${esc(brandName(b))}: "${esc(texts[b])}"`).join('\n'),
@@ -439,7 +439,6 @@ async function commentReport(handle, channelName, brands, { user, tweet } = {}) 
       ] : [Markup.button.url('👤 Profil X', `https://x.com/${username}`)]
     ]
   );
-  if (sent) logSent('x', channelName);
 }
 
 // ---------- Tombol aksi di laporan: 💬 komentar / ❤️ like / 👤 follow ----------
@@ -595,18 +594,20 @@ let tgQueue = Promise.resolve();
 function onChannelPost(msg, chat, t0, ch) {
   const key = seenKey(ch, chat);
   if (msg.id <= (db.lastSeen[key] || 0)) return false;
-  db.lastSeen[key] = msg.id; save();
-  if (db.paused) return false;
+  db.lastSeen[key] = msg.id;
   const urls = (msg.entities || []).map((e) => e.url).filter(Boolean);
   const source = chat.title || chat.username;
-  for (const h of extractHandles(msg.message || '', urls)) processSafe(h, source, t0);
+  const handles = extractHandles(msg.message || '', urls);
+  // Link ke channel sumber / channel target lain / bot ini = promosi channel call itu sendiri, bukan project
+  const skip = new Set([...chanKeys(chat), ...db.channels, '@' + bot.botInfo?.username]
+    .filter((k) => k?.startsWith('@')).map((k) => k.slice(1).toLowerCase()));
+  const links = extractTgLinks(msg.message || '', urls, skip);
+  logSource(Math.min(t0, Date.now()), ch, source, handles, links); // laporan 24 jam: dihitung juga saat bot di-pause
+  save();
+  if (db.paused) return false;
+  for (const h of handles) processSafe(h, source, t0);
   if (db.tgReportChat) {
-    // Link ke channel sumber / channel target lain / bot ini = promosi channel call itu sendiri, bukan project
-    const skip = new Set([...chanKeys(chat), ...db.channels, '@' + bot.botInfo?.username]
-      .filter((k) => k?.startsWith('@')).map((k) => k.slice(1).toLowerCase()));
-    for (const l of extractTgLinks(msg.message || '', urls, skip)) {
-      tgQueue = tgQueue.then(() => tgLink(l, source)).catch((e) => console.error('tgLink:', e));
-    }
+    for (const l of links) tgQueue = tgQueue.then(() => tgLink(l, source)).catch((e) => console.error('tgLink:', e));
   }
   return true;
 }
@@ -780,7 +781,7 @@ async function tgLink(link, source) {
       brands.map((b) => ({ text: `📋 Salin${multi ? ` · ${brandName(b)}` : ''}`, copy_text: { text: texts[b].slice(0, 256) } })),
       [Markup.button.url(k?.open || '💬 Buka di Telegram', link.url), btn('🚫 Abaikan', `tgi:${key}`)]
     ]);
-  if (sent) return logSent('tg', source, info.kind);
+  if (sent) return stat('tglinks');
   delete db.tgHistory[key]; save(); // dicoba lagi saat link ini muncul lagi, setelah channel diperbaiki
   await reportOnce('tg-send', '⚠️ Gagal mengirim ke <b>channel Telegram</b> — pastikan bot masih admin di sana (izin Post Messages). ' +
     'Atur ulang di /menu → 💬 Channel Telegram');
@@ -1011,12 +1012,12 @@ async function dailyTasks() {
   }
   for (const [k, log] of Object.entries(db.tplLog)) if (log.at(-1).at < Date.now() - 7 * DAY) delete db.tplLog[k];
   for (const [k, m] of Object.entries(db.manual)) if (m.at < Date.now() - 3 * DAY) delete db.manual[k];
-  db.sentLog = db.sentLog.filter((r) => r.at > Date.now() - 2 * DAY);
+  db.srcLog = db.srcLog.filter((r) => r.at > Date.now() - 2 * DAY);
   const file = backup();
   const s = db.stats;
   const perBrand = await Promise.all(Object.keys(db.brands).map(async (b) =>
     `${esc(brandName(b))}: ${esc(await accountStatus(b))} · ${s[`replies:${b}`] || 0} komentar`));
-  // Tiap channel hanya mendapat jumlahnya sendiri: channel Telegram → total Telegram, channel laporan → total X
+  // Tiap channel hanya mendapat totalnya sendiri: channel Telegram → link Telegram, channel laporan → akun X
   const head = '📊 <b>Ringkasan harian</b> (24 jam terakhir)\n';
   if (db.tgReportChat) await sendTo(db.tgReportChat, head + dayCount('tg'));
   await report(

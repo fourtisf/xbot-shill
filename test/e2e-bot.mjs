@@ -438,14 +438,25 @@ await test('Template Telegram: tambah/hapus lewat panel & perintah, /tpls; /sett
   assert.deepEqual(db.tgIgnore, []);
 });
 
-await test('/laporan & 📈 Laporan 24 jam: jumlah laporan per channel (X & Telegram) + sumber teratas', async () => {
+await test('/laporan & 📈 Laporan 24 jam: total akun X & link Telegram yang di-post tiap channel sumber', async () => {
+  db.srcLog = []; // hitung ulang dari post di bawah saja
+  M.x.users.cnta = user('c1', 'CntA', 'Cnt A');
+  await channelPost(alpha, 'x.com/CntA x.com/CntB t.me/CntGroup');
+  await channelPost(alpha, 'lagi x.com/CntA'); // akun yang sama di channel yang sama: 1x
+  await channelPost(beta, 'x.com/CntA x.com/CntC t.me/CntGroup t.me/CntGroup2 t.me/alpha');
+  await sleep(100);
   const r = await dm(ADMIN, '/laporan');
-  assert.match(r, /^📈 <b>Laporan 24 jam terakhir<\/b>/);
-  assert.match(r, /\n🐦 <b>Total project X diposting: 0<\/b>\n\n/); // test ini: Komentar 1-tap OFF
-  // 9 laporan terkirim di test Channel Telegram (laporan yang gagal terkirim tidak dihitung)
-  assert.match(r, /💬 <b>Total link Telegram diposting: 9<\/b>\n👥 7 grup · 📢 1 channel\nSumber: Alpha Calls 7 · Theta Calls 2$/);
+  assert.equal(r, '📈 <b>Laporan 24 jam terakhir</b>\nAkun X &amp; link Telegram yang di-post channel sumber.\n\n' +
+    '🐦 <b>Total akun X dari channel sumber: 3</b>\n• Alpha Calls: 2\n• Beta Gems: 2\n<i>Akun yang sama di beberapa channel dihitung 1x di total.</i>\n\n' +
+    '💬 <b>Total link Telegram dari channel sumber: 2</b>\n• Beta Gems: 2\n• Alpha Calls: 1\n<i>Link yang sama di beberapa channel dihitung 1x di total.</i>' +
+    '\n<i>Channel Telegram belum diatur (/menu → 💬 Channel Telegram).</i>');
   assert.ok(dataOf(await tap(ADMIN, 'm:home')).includes('m:day'));
   assert.equal((await tap(ADMIN, 'm:day')).text, r);
+  // Bot di-pause: post channel sumber tetap dihitung (hanya tidak diproses)
+  await dm(ADMIN, '/pause');
+  await channelPost(beta, 'x.com/CntD');
+  await dm(ADMIN, '/resume');
+  assert.match(await dm(ADMIN, '/laporan'), /Total akun X dari channel sumber: 4<\/b>\n• Beta Gems: 3\n• Alpha Calls: 2/);
 });
 
 // ---------- Menu "/" dan panel tombol ----------
