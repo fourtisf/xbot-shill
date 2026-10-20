@@ -43,6 +43,8 @@ Komentar Dexvra: "…"
   Tiap link dicek gratis di halaman `t.me/<nama>` (tanpa API, tanpa login): akun pribadi, bot, dan link mati tidak dilaporkan;
   grup/channel tampil dengan nama & jumlah anggota. t.me sedang tidak bisa dibuka → tetap dilaporkan tanpa info
 - **Tidak dobel**: satu link maks. 1 laporan per *Jeda project yang sama* (🔎 Filter, bawaan 7 hari)
+- **Belum ada laporan?** `/cektg @channelsumber` — bot membuka post terbaru channel sumber itu dan menunjukkan link Telegram yang
+  ditemukan + hasil cek tiap link (dilaporkan / tidak, dan kenapa). `/cektg t.me/namagrup` untuk cek satu link
 - **🚫 Abaikan** (hanya ADMIN_IDS): link itu tidak dilaporkan lagi — mis. grup chat milik channel call itu sendiri.
   Kosongkan daftarnya di /menu → 💬 Channel Telegram
 - **Template**: tiap brand bisa punya komentar khusus grup Telegram (/menu → 📝 Template → brand → ➕ Tambah komentar Telegram,

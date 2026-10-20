@@ -723,22 +723,28 @@ const TG_KIND = {
   group: { icon: '👥', name: 'Grup', unit: 'anggota', open: '💬 Buka grup' },
   channel: { icon: '📢', name: 'Channel', unit: 'subscriber', open: '📢 Buka channel' }
 };
-// Info dari halaman t.me/<nama> atau t.me/+kode (gratis, tanpa login): nama, jenis, jumlah anggota.
-// null = bukan grup/channel (akun pribadi, bot, tidak ada, undangan kedaluwarsa) → tidak dilaporkan.
-// {} = halaman tidak bisa dibuka (t.me error / dibatasi) → tetap dilaporkan, tanpa info
-async function tgInfo(link) {
-  if (Date.now() < webPauseUntil) return {};
+// Teks mentah halaman t.me (juga ditampilkan /cektg untuk mencari tahu kenapa link dilewati)
+async function tgPage(link) {
+  if (Date.now() < webPauseUntil) return { error: 't.me sedang membatasi (429)' };
   let html;
   try {
     html = await tmeGet(link.invite ? `+${link.invite}` : link.username);
   } catch (e) {
     console.error(`t.me ${link.key}:`, e.message);
-    return {};
+    return { error: e.message };
   }
   const text = (re) => unescapeHtml((re.exec(html)?.[1] || '').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
-  const title = text(/<div class="tgme_page_title"[^>]*>([\s\S]*?)<\/div>/);
-  const extra = text(/<div class="tgme_page_extra"[^>]*>([\s\S]*?)<\/div>/);
-  const og = unescapeHtml(/<meta property="og:title" content="([^"]*)"/.exec(html)?.[1] || '');
+  return {
+    title: text(/<div class="tgme_page_title"[^>]*>([\s\S]*?)<\/div>/),
+    extra: text(/<div class="tgme_page_extra"[^>]*>([\s\S]*?)<\/div>/),
+    og: unescapeHtml(/<meta property="og:title" content="([^"]*)"/.exec(html)?.[1] || '')
+  };
+}
+// Info dari halaman t.me/<nama> atau t.me/+kode (gratis, tanpa login): nama, jenis, jumlah anggota.
+// null = bukan grup/channel (akun pribadi, bot, tidak ada, undangan kedaluwarsa) → tidak dilaporkan.
+// {} = halaman tidak bisa dibuka (t.me error / dibatasi) → tetap dilaporkan, tanpa info
+function tgInfoFrom({ title, extra, og, error }) {
+  if (error) return {};
   const kind = /\b(members?|online)\b/i.test(extra) ? 'group' : /\b(subscribers?|followers?)\b/i.test(extra) ? 'channel' : null;
   const name = title || og; // og:title (pratinjau link) sebagai cadangan kalau tampilan halaman t.me berubah
   if (kind) return { title: name, kind, count: /(\d[\d\s.,]*?)\s*(?:members?|subscribers?|followers?)\b/i.exec(extra)?.[1] };
@@ -747,18 +753,35 @@ async function tgInfo(link) {
   if (!name || /^@\w+$/.test(extra) || /^Telegram: |^Join group chat|right away/i.test(`${og}\n${title}`)) return null;
   return { title: name };
 }
+const tgInfo = async (link) => tgInfoFrom(await tgPage(link));
 const tgTemplates = (b) => (db.brands[b].tgTemplates?.length ? db.brands[b].tgTemplates : db.brands[b].templates);
 // Brand yang punya akun X atau template Telegram sendiri (akun X tidak dipakai: komentar ditempel admin di Telegram)
 function tgBrands() {
   const list = Object.keys(db.brands).filter((b) => clients[b] || db.brands[b].tgTemplates?.length);
   return list.length ? list : [db.defaultBrand];
 }
+// Hasil cek satu link untuk /cektg: apa yang akan dilakukan bot dengan link ini
+async function tgCheckLine(link) {
+  const page = await tgPage(link);
+  const info = tgInfoFrom(page);
+  const k = TG_KIND[info?.kind];
+  const why = !info ? `❌ tidak dilaporkan: akun pribadi / bot / tidak ada (judul "${page.title || page.og}", info "${page.extra}")`
+    : page.error ? `⚠️ halaman t.me tidak bisa dibuka (${page.error}) — tetap dilaporkan tanpa info`
+    : `✅ ${k ? `${k.icon} ${k.name}` : 'Telegram'} · ${info.title}${info.count ? ` · ${info.count} ${k?.unit || 'anggota'}` : ''}`;
+  const last = db.tgHistory[link.key];
+  const state = db.tgIgnore.includes(link.key) ? '\n   🚫 diabaikan (tombol Abaikan)'
+    : last && Date.now() - last < db.filter.cooldownDays * DAY ? `\n   ⏳ sudah dicek/dilaporkan ${fmtTime(last)} — jeda ${db.filter.cooldownDays} hari` : '';
+  return `• ${link.url}\n   ${esc(why)}${state}`;
+}
 async function tgLink(link, source) {
   const { key } = link;
   if (!db.tgReportChat || db.tgIgnore.includes(key) || Date.now() - (db.tgHistory[key] || 0) < db.filter.cooldownDays * DAY) return;
   db.tgHistory[key] = Date.now(); save(); // dicatat sebelum await: link yang sama di post berikutnya tidak dobel
   const info = await tgInfo(link);
-  if (!info) return console.log(`${link.url} bukan grup/channel (akun pribadi, bot, atau tidak ada) — tidak dilaporkan`);
+  if (!info) {
+    delete db.tgHistory[key]; save(); // tidak dikunci jeda: dicek lagi saat link ini muncul lagi
+    return console.log(`${link.url} bukan grup/channel (akun pribadi, bot, atau tidak ada) — tidak dilaporkan`);
+  }
   const brands = tgBrands();
   const vars = { name: info.title || (link.username ? '@' + link.username : 'grup ini'), handle: link.username || '', channel: source };
   const texts = Object.fromEntries(brands.map((b) => {
@@ -1106,6 +1129,7 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 /auto — lihat · /auto watchOptins false · /auto dailyReportHour 8
 
 /laporan — jumlah laporan 24 jam terakhir: channel X &amp; channel Telegram
+/cektg @channel · /cektg t.me/grup — link Telegram yang bot temukan &amp; kenapa dilaporkan / tidak
 /pause · /resume · /resume brand · /status
 
 <b>Untuk project</b> (hanya kalau opt-in publik ON di /menu → Otomatis): /optin @handle [brand], /verify @handle`;
@@ -1507,6 +1531,42 @@ function resume(b) {
 }
 bot.command('status', (ctx) => ctx.replyWithHTML(statusText()));
 bot.command('laporan', (ctx) => ctx.replyWithHTML(dayReportText()));
+// /cektg: apa yang bot lihat — @channel sumber (post terbaru di web t.me) atau satu link grup t.me/…
+bot.command('cektg', async (ctx) => {
+  const arg = ctx.message.text.split(/\s+/)[1];
+  if (!arg) {
+    return ctx.reply('Format:\n/cektg @channelsumber — link Telegram di post terbaru channel sumber itu\n' +
+      '/cektg t.me/namagrup — cek satu link grup: dilaporkan atau tidak, dan kenapa');
+  }
+  const c = normChannel(arg);
+  if (!(c && db.channels.includes(c))) {
+    const [link] = extractTgLinks(arg, [], new Set());
+    if (!link) return ctx.reply('Bukan channel sumber (lihat /channels) atau link t.me/… grup. Contoh: /cektg t.me/namagrup');
+    return ctx.replyWithHTML(`🔎 <b>Cek link Telegram</b>${db.tgReportChat ? '' : ' (⚠️ channel Telegram belum diatur)'}\n${await tgCheckLine(link)}`,
+      { disable_web_page_preview: true });
+  }
+  const name = webName(c, targets.get(c));
+  if (!name) return ctx.reply(`${c} tidak punya halaman web publik (channel privat) — /cektg hanya untuk channel publik.`);
+  let page;
+  try { page = await fetchWeb(name); } catch (e) { return ctx.reply(`❌ Gagal membuka t.me/s/${name}: ${e.message}`); }
+  if (!page) return ctx.reply(`❌ t.me/s/${name} tidak punya daftar post (privat / username salah).`);
+  const skip = new Set([name, ...db.channels, '@' + bot.botInfo?.username]
+    .filter(Boolean).map((k) => k.replace(/^@/, '').toLowerCase()));
+  const xs = new Set(), links = new Map();
+  for (const p of page.posts) {
+    for (const h of extractHandles(p.text, p.urls)) xs.add(h);
+    for (const l of extractTgLinks(p.text, p.urls, skip)) links.set(l.key, l);
+  }
+  const list = [...links.values()];
+  const checks = [];
+  for (const l of list.slice(0, 5)) checks.push(await tgCheckLine(l)); // satu per satu, maks. 5: t.me tidak dibanjiri
+  return ctx.replyWithHTML(
+    `🔎 <b>${esc(page.title)}</b> — ${page.posts.length} post terbaru di t.me/s/${esc(name)}\n` +
+    `🐦 Akun X: ${xs.size}\n💬 Link Telegram: ${list.length}` +
+    (list.length ? `\n\n${checks.join('\n')}${list.length > 5 ? `\n… +${list.length - 5} link lagi (cek satu per satu: /cektg t.me/…)` : ''}`
+      : '\nTidak ada link t.me di post terbaru channel ini — jadi belum ada yang dikirim ke channel Telegram.'),
+    { disable_web_page_preview: true });
+});
 function statusText() {
   const accounts = Object.keys(db.brands).map((b) => {
     if (!clients[b]) return `${esc(brandName(b))}: ❌ belum ada akun`;
@@ -1637,7 +1697,8 @@ function tgPanel() {
       `• Bot mengecek tiap link di halaman t.me: akun pribadi, bot, dan link mati tidak dilaporkan. ` +
       'Link post, @mention (sering handle X), dan link ke channel target sendiri dilewati.\n' +
       `• Satu link dilaporkan maks. 1x per ${db.filter.cooldownDays} hari (🔎 Filter → Jeda project yang sama).\n` +
-      `• 🚫 Abaikan di laporan: link itu tidak dilaporkan lagi (diabaikan: ${n}).\n\n` +
+      `• 🚫 Abaikan di laporan: link itu tidak dilaporkan lagi (diabaikan: ${n}).\n` +
+      '• Belum ada laporan? /cektg @channelsumber — lihat link Telegram yang bot temukan di post terbarunya.\n\n' +
       `<b>Template</b> (📝 Template → brand)\n${tpl.join('\n')}`,
     rows: [
       [btn('📨 Atur channel', 'm:ask:tgreport'), ...(db.tgReportChat ? [btn('🛑 Matikan', 'm:tgoff')] : [])],
@@ -2079,6 +2140,7 @@ const ADMIN_COMMANDS = [
   { command: 'menu', description: '⚙️ Panel pengaturan (tombol)' },
   { command: 'status', description: 'Status bot & akun X' },
   { command: 'laporan', description: 'Laporan 24 jam: jumlah X & Telegram per channel' },
+  { command: 'cektg', description: 'Cek link Telegram di channel sumber / satu grup' },
   { command: 'accounts', description: 'Akun X per brand' },
   { command: 'channels', description: 'Channel yang dipantau' },
   { command: 'tpls', description: 'Lihat template' },

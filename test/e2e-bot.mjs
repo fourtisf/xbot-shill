@@ -459,6 +459,29 @@ await test('/laporan & 📈 Laporan 24 jam: total akun X & link Telegram yang di
   assert.match(await dm(ADMIN, '/laporan'), /Total akun X dari channel sumber: 4<\/b>\n• Beta Gems: 3\n• Alpha Calls: 2/);
 });
 
+await test('/cektg: link Telegram yang bot temukan di channel sumber & kenapa dilaporkan / tidak', async () => {
+  assert.match(await dm(ADMIN, '/cektg'), /Format:\n\/cektg @channelsumber/);
+  assert.match(await dm(ADMIN, '/cektg bukan-apa2'), /Bukan channel sumber/);
+  let r = await dm(ADMIN, '/cektg t.me/someuser');
+  assert.match(r, /• https:\/\/t\.me\/someuser\n   ❌ tidak dilaporkan: akun pribadi \/ bot \/ tidak ada \(judul "Some Dev", info "@someuser"\)/);
+  assert.match(r, /channel Telegram belum diatur/);
+  assert.match(await dm(ADMIN, '/cektg https://t.me/DownGroup'), /⚠️ halaman t\.me tidak bisa dibuka \(fetch failed\)/);
+  assert.match(await dm(ADMIN, '/cektg t.me/RetryGroup'), /✅ 👥 Grup · Retry Group · 7 anggota\n   ⏳ sudah dicek\/dilaporkan/);
+  // Channel sumber publik: post terbaru di web t.me dibaca langsung
+  M.botChats['@iota'] = { id: -1001009, type: 'channel', username: 'iota', title: 'Iota Calls' };
+  M.web.iota = { title: 'Iota Calls', posts: [{ id: 1, date: Date.now(), buttons: [['TG', 'https://t.me/IotaGroup']],
+    html: 'x.com/IotaProj <a href="https://t.me/MenIota">@MenIota</a> https://t.me/iota/5 t.me/maestro_bot?start=1' }] };
+  M.tgPages.iotagroup = { title: 'Iota Group', extra: '77 members' };
+  await dm(ADMIN, '/addchannel @iota');
+  r = await dm(ADMIN, '/cektg @iota');
+  assert.match(r, /^🔎 <b>Iota Calls<\/b> — 1 post terbaru di t\.me\/s\/iota\n🐦 Akun X: 1\n💬 Link Telegram: 1\n\n• https:\/\/t\.me\/IotaGroup\n   ✅ 👥 Grup · Iota Group · 77 anggota$/);
+  M.web.iota.posts.push({ id: 2, date: Date.now(), html: 'x.com/IotaProj2' });
+  M.web.iota.posts.splice(0, 1);
+  assert.match(await dm(ADMIN, '/cektg https://t.me/iota'), /💬 Link Telegram: 0\nTidak ada link t\.me di post terbaru/);
+  await dm(ADMIN, '/delchannel @iota');
+  assert.match(await dm(ADMIN, '/cektg @alpha'), /tidak punya daftar post|tidak punya halaman web publik/);
+});
+
 // ---------- Menu "/" dan panel tombol ----------
 await test('menu "/" terdaftar: publik untuk project, lengkap untuk admin', async () => {
   const calls = M.botCalls.filter((c) => c.method === 'setMyCommands');
@@ -770,7 +793,7 @@ await test('setiap perintah admin membalas tanpa error', async () => {
     '/help', '/menu', '/status', '/accounts', '/xstatus', '/channels', '/tpls', '/tpls dexvra', '/optins',
     '/filter', '/filter minAgeDays 7', '/limits', '/limits maxPerDay 60', '/auto', '/auto dailyReportHour 8',
     '/jeda', '/jeda 2 4', '/jeda project 3', '/jeda abc',
-    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99', '/addtgtpl dexvra Tur TG {name}', '/deltgtpl dexvra 99', '/addtgtpl', '/settgreport abc',
+    '/addtpl dexvra Tur {name} 🙌', '/deltpl dexvra 99', '/addtgtpl dexvra Tur TG {name}', '/deltgtpl dexvra 99', '/addtgtpl', '/settgreport abc', '/cektg', '/cektg xyz',
     '/addoptin @TourProj dexvra', '/addoptin bad-handle', '/deloptin @tourproj',
     '/addchannel @tourch', '/delchannel @tourch', '/addchannel', '/addchannel @x nobrand',
     '/pause', '/resume', '/resume dexvra', '/resume nobrand',
