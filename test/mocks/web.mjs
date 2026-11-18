@@ -48,9 +48,23 @@ const tgPage = (p) => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>T
 <div class="tgme_page_action"><a class="tgme_action_button_new shine" href="tg://resolve?domain=x">View in Telegram</a></div>
 </div></div></div></body></html>`;
 
-globalThis.fetch = async (url) => {
+// API launchpad (src/launchpad.js): M.launchpad = { awalan URL: JSON | { httpStatus, text } | Error | (url, init) => salah satunya }
+M.launchpad ||= {};
+async function launchpadResponse(url, init) {
+  const key = Object.keys(M.launchpad).find((k) => url.startsWith(k));
+  if (!key) return null;
+  let v = M.launchpad[key];
+  if (typeof v === 'function') v = await v(url, init);
+  if (v instanceof Error) throw v;
+  if (v?.httpStatus) return new Response(v.text || '', { status: v.httpStatus, headers: { 'content-type': 'text/html' } });
+  return new Response(JSON.stringify(v), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+globalThis.fetch = async (url, init) => {
   url = String(url);
   M.webCalls.push(url);
+  const lp = await launchpadResponse(url, init);
+  if (lp) return lp;
   const info = /^https:\/\/t\.me\/(\+?[\w-]+)$/.exec(url);
   if (info && info[1] !== 's') {
     const key = info[1].startsWith('+') ? info[1] : info[1].toLowerCase();

@@ -6,6 +6,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { db, save, backup, newBrand } from './db.js';
+import { PADS, PAD_LABELS, SOURCE_PADS, SOURCES, CHAIN_NAMES, fetchSource, hasEnrich, enrichSource, tokenKey, fmtMc } from './launchpad.js';
 
 const ADMINS = (process.env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -379,7 +380,7 @@ function filterWhy(user) {
 // Project belum opt-in: bot TIDAK berkomentar sendiri (aturan X: komentar otomatis ke akun yang tidak minta = spam).
 // Kalau "Komentar 1-tap" ON, bot mencari tweet terbarunya dan menyiapkan teks komentar per brand; admin yang
 // menekan tombol 💬 di laporan (1 tekan = 1 komentar dari akun brand). Dilaporkan sekali per cooldown
-async function notOptedIn(handle, channelName) {
+async function notOptedIn(handle, channelName, { lite = false } = {}) {
   if (cooling(handle)) return;
   db.history[handle] = Date.now(); save();
   // Komentar 1-tap ON: channel laporan hanya berisi laporan "siap dikomentari" — project yang tidak bisa disiapkan
@@ -391,7 +392,7 @@ async function notOptedIn(handle, channelName) {
   const brands = activeBrands().filter((b) => db.brands[b].templates.length);
   if (!db.auto.manualAssist || !brands.length) return plain();
   const toProfile = () => commentReport(handle, channelName, brands);
-  if (db.auto.freeMode || !rb || limited(rb)) return toProfile();
+  if (db.auto.freeMode || lite || !rb || limited(rb)) return toProfile(); // lite: launchpad tanpa API X (volume besar)
   try {
     const x = clients[rb];
     const { data: user } = await x.v2.userByUsername(handle, USER_FIELDS);
@@ -541,9 +542,9 @@ async function processProject(handle, channelName, t0, brand) {
 
 // Hanya project opt-in yang dikomentari, oleh akun brand pilihannya; project lain cukup dilaporkan.
 // Tunggu rate limit akun itu selesai, ulangi kalau error jaringan / server X
-async function processSafe(handle, channelName, t0) {
+async function processSafe(handle, channelName, t0, opts = {}) {
   for (let tries = 0; tries < 3; tries++) {
-    if (!db.optins[handle]) return notOptedIn(handle, channelName);
+    if (!db.optins[handle]) return notOptedIn(handle, channelName, opts);
     const brand = brandOf(db.optins[handle]);
     if (isDown(brand)) return reportOnce(`down|${brand}`, `⏭ Project dilewati karena akun ${esc(brandLabel(brand))} sedang dihentikan (/resume ${brand})`);
     while (limited(brand)) await sleep(POLL);
@@ -822,6 +823,124 @@ bot.action(/^tgi:(\+?[\w-]{4,60})$/, async (ctx) => {
     }).catch(() => {});
   }
 });
+
+// ---------- Launchpad: token baru PumpFun / BonkFun / LaunchLab / Four.meme / Clanker / Pons ----------
+// Diperlakukan seperti post channel target (permintaan operator 18 Nov 2026): link X token → laporan "siap dikomentari"
+// di channel laporan, link Telegram → channel Telegram, punya keduanya → dua-duanya, tanpa keduanya → dilewati.
+// Tanpa batas market cap (bawaan). Yang sudah ada tetap berlaku: jeda project / link yang sama (cooldownDays), opt-in,
+// template per brand, 📋 Salin, 🚫 Abaikan, laporan 24 jam. Laporan diberi jarak LP_GAP supaya tidak kena batas
+// Telegram (±20 pesan/menit per channel). Data launchpad: src/launchpad.js
+const LP_POLL_MS = Number(process.env.LP_POLL_MS) || 0; // dipercepat oleh npm test
+const LP_GAP = Number(process.env.LP_GAP_MS ?? 3500);
+const LP_FIRST = 3; // putaran pertama sesudah start / ON: maks. 3 token terbaru per sumber, bukan banjir laporan
+const LP_MAX = 30; // maks. token baru per sumber per putaran (yang terbaru); sisanya putaran berikutnya
+const LP_TRIES = 3; // Pons: getTokenInfo gagal 3x berturut-turut → token dilewati
+const LP_SEEN_MAX = 2000;
+const lpHealth = {}; // sumber -> { ok, n, err, errAt }
+const lpCount = {}; // pad -> { x, tg }: link yang diteruskan ke laporan sejak bot start
+const lpPrimed = new Set();
+const lpFail = new Map();
+const lpAgo = (t) => {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  return s < 60 ? `${s} dtk lalu` : s < 3600 ? `${Math.floor(s / 60)} mnt lalu` : `${Math.floor(s / 3600)} jam lalu`;
+};
+// "Sumber:" di laporan — sama dengan nama channel sumber untuk post channel target
+const lpSource = (t) => `🚀 ${t.label}${t.chain === 'solana' ? '' : ` (${CHAIN_NAMES[t.chain] || t.chain})`} · ` +
+  `${t.symbol === '?' ? t.name : '$' + t.symbol} · MC ${fmtMc(t.mc)}`;
+
+// Satu token → laporan X / Telegram lewat jalur channel target. true = ada laporan baru (lalu diberi jarak)
+async function lpToken(t) {
+  const L = db.launchpad;
+  if (L.minMc && t.mc !== null && t.mc < L.minMc) return false;
+  const skip = new Set([...db.channels, '@' + bot.botInfo?.username].filter((k) => k?.startsWith('@')).map((k) => k.slice(1).toLowerCase()));
+  const handles = t.x ? extractHandles('', [t.x]) : [];
+  const links = t.tg ? extractTgLinks('', [t.tg], skip) : [];
+  if (!handles.length && !links.length) return false;
+  logSource(Date.now(), `launchpad:${t.pad}`, `🚀 ${PAD_LABELS[t.pad]}`, handles, links);
+  save();
+  const xNew = db.reportChat ? handles.filter((h) => !cooling(h) && !inFlight.has(h)) : [];
+  const tgNew = db.tgReportChat ? links.filter((l) => !db.tgIgnore.includes(l.key) &&
+    Date.now() - (db.tgHistory[l.key] || 0) >= db.filter.cooldownDays * DAY) : [];
+  if (!xNew.length && !tgNew.length) return false;
+  const source = lpSource(t);
+  const c = (lpCount[t.pad] ||= { x: 0, tg: 0 });
+  for (const h of xNew) {
+    const done = processSafe(h, source, Date.now(), { lite: !L.useXApi });
+    if (!db.optins[h]) await done; // project opt-in: masuk antrian komentar (bisa menunggu rate limit) — jangan ditunggu
+    c.x++;
+  }
+  for (const l of tgNew) {
+    tgQueue = tgQueue.then(() => tgLink(l, source)).catch((e) => console.error('tgLink:', e));
+    await tgQueue;
+    c.tg++;
+  }
+  await sleep(LP_GAP);
+  return true;
+}
+
+async function launchpadCycle() {
+  const L = db.launchpad;
+  if (!L.enabled || db.paused || !(db.reportChat || db.tgReportChat)) return 0;
+  const active = SOURCES.filter((src) => SOURCE_PADS[src].some((p) => L.pads[p]));
+  const got = await Promise.all(active.map(async (src) => {
+    const h = (lpHealth[src] ||= {});
+    try {
+      const list = await fetchSource(src);
+      Object.assign(h, { ok: Date.now(), n: list.length, err: null });
+      return list;
+    } catch (e) {
+      Object.assign(h, { err: String(e.message || e).slice(0, 120), errAt: Date.now() });
+      console.error(`launchpad ${src}:`, h.err);
+      return null;
+    }
+  }));
+  if (!Array.isArray(L.seen)) L.seen = [];
+  const seen = new Set(L.seen);
+  const mark = (k) => { if (!seen.has(k)) { seen.add(k); L.seen.push(k); } };
+  let n = 0;
+  for (const [i, src] of active.entries()) {
+    if (!got[i]) continue;
+    const batch = new Set();
+    let fresh = got[i].filter((t) => { // API: terbaru lebih dulu
+      const k = tokenKey(t);
+      if (!t.ca || !L.pads[t.pad] || seen.has(k) || batch.has(k)) return false;
+      batch.add(k);
+      return true;
+    });
+    if (!lpPrimed.has(src)) {
+      lpPrimed.add(src);
+      for (const t of fresh.slice(LP_FIRST)) mark(tokenKey(t));
+      fresh = fresh.slice(0, LP_FIRST);
+    }
+    fresh = fresh.slice(0, LP_MAX);
+    if (hasEnrich(src) && fresh.length) {
+      await enrichSource(src, fresh, { rpc: L.rpc }).catch((e) => console.error(`launchpad ${src}:`, e.message));
+    }
+    for (const t of fresh.reverse()) { // yang paling lama dulu
+      if (!db.launchpad.enabled || db.paused) break;
+      const k = tokenKey(t);
+      if (t.retry) { // link X / TG belum terbaca (Pons: RPC gagal) → coba lagi putaran berikutnya
+        const f = (lpFail.get(k) || 0) + 1;
+        if (f < LP_TRIES) { lpFail.set(k, f); continue; }
+        console.log(`launchpad: ${k} dilewati (${t.retry})`);
+      }
+      lpFail.delete(k);
+      mark(k);
+      if (!t.retry && await lpToken(t)) n++;
+    }
+  }
+  L.seen = L.seen.slice(-LP_SEEN_MAX);
+  save();
+  return n;
+}
+async function launchpadLoop() {
+  try { await launchpadCycle(); } catch (e) { console.error('launchpad:', e); }
+  setTimeout(launchpadLoop, LP_POLL_MS || Math.max(20, db.launchpad.pollSec) * 1000);
+}
+const parseMc = (s) => {
+  const m = /^\$?(\d+(?:\.\d+)?)([km]?)$/i.exec(String(s || '').replace(/,/g, ''));
+  return m ? Math.round(Number(m[1]) * { '': 1, k: 1e3, m: 1e6 }[m[2].toLowerCase()]) : null;
+};
 
 async function startListener() {
   tg = new TelegramClient(
@@ -1127,6 +1246,10 @@ Paling mudah: /menu — semua pengaturan pakai tombol
 
 <b>Otomatis</b>
 /auto — lihat · /auto watchOptins false · /auto dailyReportHour 8
+
+<b>Launchpad</b> (token baru PumpFun, BonkFun, LaunchLab, Four.meme, Clanker, Pons)
+/launchpad — panel · /launchpad on|off · /launchpad pumpfun off · /launchpad mc 10k
+Link X → channel laporan, link Telegram → channel Telegram
 
 /laporan — jumlah laporan 24 jam terakhir: channel X &amp; channel Telegram
 /cektg @channel · /cektg t.me/grup — link Telegram yang bot temukan &amp; kenapa dilaporkan / tidak
@@ -1567,6 +1690,25 @@ bot.command('cektg', async (ctx) => {
       : '\nTidak ada link t.me di post terbaru channel ini — jadi belum ada yang dikirim ke channel Telegram.'),
     { disable_web_page_preview: true });
 });
+// /launchpad — panel launchpad; /launchpad on|off · /launchpad <nama> on|off · /launchpad mc 10k · /launchpad xapi on|off
+bot.command('launchpad', (ctx) => {
+  const [a, b] = ctx.message.text.split(/\s+/).slice(1).map((v) => v.toLowerCase());
+  const L = db.launchpad;
+  const onOff = (v) => v === 'on' || v === 'off';
+  if (onOff(a)) {
+    L.enabled = a === 'on';
+    if (L.enabled) lpPrimed.clear();
+  } else if (PADS.includes(a) && onOff(b)) L.pads[a] = b === 'on';
+  else if (a === 'mc' && parseMc(b) !== null) L.minMc = parseMc(b);
+  else if (a === 'xapi' && onOff(b)) L.useXApi = b === 'on';
+  else if (a) {
+    return ctx.replyWithHTML('Pemakaian:\n/launchpad — panel\n/launchpad on · /launchpad off\n' +
+      `/launchpad &lt;nama&gt; on|off — nama: ${PADS.join(', ')}\n/launchpad mc 10k · /launchpad mc 0 (tanpa batas)\n/launchpad xapi on|off`);
+  }
+  if (a) save();
+  return showPanel(ctx, lpPanel(), false);
+});
+
 function statusText() {
   const accounts = Object.keys(db.brands).map((b) => {
     if (!clients[b]) return `${esc(brandName(b))}: ❌ belum ada akun`;
@@ -1577,7 +1719,8 @@ function statusText() {
     `<b>Status</b>: ${db.paused ? '⏸ pause' : '🟢 jalan'}\n` +
     (LISTENER ? `Listener Telegram: ${tg?.connected ? '✅' : '❌'}\n` : 'Mode: bot saja (channel publik dibaca dari web t.me, tanpa admin)\n') +
     `Channel terpantau: ${targets.size}/${db.channels.length}${missing.length ? ` (${NOT_READ}: ${esc(missing.join(', '))})` : ''}\n` +
-    `Channel laporan: ${db.reportChat ? '✅' : '❌'} · Channel Telegram: ${db.tgReportChat ? '✅' : '❌'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
+    `Channel laporan: ${db.reportChat ? '✅' : '❌'} · Channel Telegram: ${db.tgReportChat ? '✅' : '❌'}\n` +
+    `Launchpad: ${db.launchpad.enabled ? `ON (${PADS.filter((p) => db.launchpad.pads[p]).length}/${PADS.length} sumber)` : 'OFF'}\n\n<b>Akun X</b>\n${accounts.join('\n')}\n\n` +
     `Opt-in: ${Object.keys(db.optins).length} (menunggu verifikasi: ${Object.keys(db.pending).length})\n` +
     `Pantau tweet opt-in: ${db.auto.watchOptins ? 'ON' : 'OFF'}\nAntrian: ${db.queue.length}\n` +
     `Komentar per project: ${db.filter.tweetsPerProject} tweet terbaru, maks. ${db.auto.maxRepliesPerProjectPerDay}/hari\n` +
@@ -1614,6 +1757,7 @@ function homePanel() {
       [btn('🔎 Filter', 'm:flt'), btn('🤖 Otomatis', 'm:auto')],
       [btn(`📨 Channel laporan ${db.reportChat ? '✅' : '❌'}`, 'm:ask:report')],
       [btn(`💬 Channel Telegram ${db.tgReportChat ? '✅' : '❌'}`, 'm:tg'), btn('📈 Laporan 24 jam', 'm:day')],
+      [btn(`🚀 Launchpad ${db.launchpad.enabled ? '✅' : '❌'}`, 'm:lp')],
       [db.paused ? btn('▶️ Jalankan lagi', 'm:resume') : btn('⏸ Pause semua', 'm:pause'), btn('❓ Bantuan', 'm:help')]
     ]
   };
@@ -1791,16 +1935,49 @@ function autoPanel() {
     ]
   };
 }
+function lpPanel() {
+  const L = db.launchpad;
+  const srcOf = Object.fromEntries(Object.entries(SOURCE_PADS).flatMap(([src, ps]) => ps.map((p) => [p, src])));
+  const lines = PADS.map((p) => {
+    const h = lpHealth[srcOf[p]] || {};
+    const c = lpCount[p] || { x: 0, tg: 0 };
+    const st = !L.pads[p] ? 'mati'
+      : h.err && (h.errAt || 0) >= (h.ok || 0) ? `⚠️ ${esc(h.err)} (${lpAgo(h.errAt)})`
+        : h.ok ? `OK ${lpAgo(h.ok)}` : L.enabled ? 'menunggu putaran pertama' : '-';
+    return `${L.pads[p] ? '✅' : '❌'} ${PAD_LABELS[p]} — ${st} · X ${c.x} / TG ${c.tg}`;
+  });
+  const noChat = !db.reportChat && !db.tgReportChat;
+  return {
+    text: '🚀 <b>Launchpad</b>\nToken baru dari PumpFun, BonkFun, Raydium LaunchLab, Four.meme, Clanker &amp; Pons diperlakukan ' +
+      'seperti post channel target:\n• punya link X → laporan "siap dikomentari" di 📨 Channel laporan\n' +
+      '• punya link Telegram → 💬 Channel Telegram\n• punya keduanya → dua-duanya\n' +
+      `Tanpa link X / Telegram → dilewati. Project / link yang sama tetap maks. 1x per ${db.filter.cooldownDays} hari.\n\n` +
+      `Status: <b>${L.enabled ? '🟢 ON' : '❌ OFF'}</b>${noChat ? '\n⚠️ Channel laporan &amp; Channel Telegram belum diatur — tidak ada yang dilaporkan' : ''}\n` +
+      `Channel laporan (X): ${db.reportChat ? '✅' : '❌'} · Channel Telegram: ${db.tgReportChat ? '✅' : '❌'}\n` +
+      `Min. market cap: ${L.minMc ? '$' + L.minMc.toLocaleString('en-US') : 'tanpa batas'} · cek tiap ${L.pollSec} dtk\n` +
+      `Cari tweet terbaru lewat API X: ${L.useXApi ? 'ON (memakai kredit X)' : 'OFF — hemat, laporan berisi 📋 Salin + 👤 Profil X'}\n\n` +
+      `<b>Launchpad</b> (link diteruskan sejak bot start)\n${lines.join('\n')}\n\n` +
+      '<i>Perintah: /launchpad on|off · /launchpad pumpfun off · /launchpad mc 10k · /launchpad xapi on</i>',
+    rows: [
+      [btn(`Launchpad: ${L.enabled ? '✅ ON' : '❌ OFF'}`, 'm:tog:launchpad.enabled')],
+      ...chunk(PADS.map((p) => btn(`${L.pads[p] ? '✅' : '❌'} ${PAD_LABELS[p]}`, `m:lpp:${p}`)), 2),
+      ...optionRows('💰 Min. market cap', 'launchpad.minMc', [0, 5000, 10000, 50000], (v) => (!v ? 'Bebas' : `$${v / 1000}K`)),
+      [btn(`Cari tweet lewat API X: ${L.useXApi ? '✅ ON' : '❌ OFF'}`, 'm:tog:launchpad.useXApi')],
+      [btn('🔄 Refresh', 'm:lp'), ...HOME]
+    ]
+  };
+}
 // Hanya nilai ini yang bisa diubah lewat tombol (+ panel yang ditampilkan ulang)
 const SETTABLE = {
   'limits.maxPerHour': limPanel, 'limits.maxPerDay': limPanel, 'auto.replyGapMin': limPanel,
   'filter.tweetsPerProject': limPanel, 'auto.maxRepliesPerProjectPerDay': limPanel,
   'filter.minFollowers': fltPanel, 'filter.minAgeDays': fltPanel, 'filter.cooldownDays': fltPanel, 'filter.maxTweetAgeHours': fltPanel,
-  'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel
+  'auto.watchIntervalMin': autoPanel, 'auto.dailyReportHour': autoPanel, 'auto.webPollSec': autoPanel,
+  'launchpad.minMc': lpPanel
 };
 const TOGGLE = {
   'auto.watchOptins': autoPanel, 'auto.autoVerify': autoPanel, 'auto.publicOptin': autoPanel, 'auto.manualAssist': autoPanel,
-  'auto.freeMode': autoPanel
+  'auto.freeMode': autoPanel, 'launchpad.enabled': lpPanel, 'launchpad.useXApi': lpPanel
 };
 
 // Nama di console.x.com (nama lama di developer portal dalam kurung)
@@ -2091,6 +2268,11 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
     case 'lim': panel = limPanel(); break;
     case 'flt': panel = fltPanel(); break;
     case 'auto': panel = autoPanel(); break;
+    case 'lp': panel = lpPanel(); break;
+    case 'lpp':
+      if (PADS.includes(arg)) { db.launchpad.pads[arg] = !db.launchpad.pads[arg]; save(); toast = '✅ Disimpan'; }
+      panel = lpPanel();
+      break;
     case 'help': panel = { text: HELP, rows: [HOME] }; break;
     case 'set': {
       const [path, raw] = args;
@@ -2105,6 +2287,7 @@ bot.action(/^m:([a-z]+)(?::(.*))?$/, async (ctx) => {
       const [o, k] = arg.split('.');
       db[o][k] = !db[o][k]; save(); toast = '✅ Disimpan'; panel = TOGGLE[arg]();
       if (arg === 'auto.publicOptin') await setPublicCommands();
+      if (arg === 'launchpad.enabled' && db.launchpad.enabled) lpPrimed.clear(); // putaran pertama: maks. 3 token per sumber
       break;
     }
     case 'gap': {
@@ -2141,6 +2324,7 @@ const ADMIN_COMMANDS = [
   { command: 'status', description: 'Status bot & akun X' },
   { command: 'laporan', description: 'Laporan 24 jam: jumlah X & Telegram per channel' },
   { command: 'cektg', description: 'Cek link Telegram di channel sumber / satu grup' },
+  { command: 'launchpad', description: 'Token baru launchpad → laporan X / Telegram' },
   { command: 'accounts', description: 'Akun X per brand' },
   { command: 'channels', description: 'Channel yang dipantau' },
   { command: 'tpls', description: 'Lihat template' },
@@ -2203,6 +2387,7 @@ save();
 runQueue();
 setInterval(tick, TICK);
 webLoop();
+launchpadLoop();
 
 function stop(sig) {
   try { bot.stop(sig); } catch {}

@@ -74,6 +74,17 @@ const defaults = {
     backupKeep: 7,
     publicOptin: false // false = bot privat, hanya ADMIN_IDS; true = project boleh /optin sendiri
   },
+  // Launchpad: token baru PumpFun / BonkFun / LaunchLab / Four.meme / Clanker / Pons diperlakukan seperti post channel
+  // target — link X → channel laporan, link Telegram → channel Telegram (src/launchpad.js). Mati sampai dinyalakan
+  launchpad: {
+    enabled: false,
+    pads: { pumpfun: true, bonkfun: true, launchlab: true, fourmeme: true, clanker: true, pons: true, dexscreener: true },
+    minMc: 0, // 0 = tanpa batas market cap
+    useXApi: false, // false = laporan tanpa API X (📋 Salin + 👤 Profil X), hemat kredit; volume launchpad besar
+    pollSec: 45,
+    rpc: 'https://rpc.mainnet.chain.robinhood.com', // RPC Robinhood Chain untuk link X / TG token Pons
+    seen: [] // token yang sudah dibaca (chain:alamat), 2000 terakhir
+  },
   queue: [], // antrian aksi X, tersimpan supaya tidak hilang saat restart
   sentAt: {}, // brand -> waktu aksi X 24 jam terakhir (batas per jam/hari per akun)
   replyLog: {}, // handle -> [timestamp komentar 24 jam terakhir]
@@ -119,7 +130,11 @@ function load() {
     ...saved,
     filter: { ...defaults.filter, ...(saved.filter || {}) },
     limits: { ...defaults.limits, ...(saved.limits || {}) },
-    auto: { ...defaults.auto, ...(saved.auto || {}) }
+    auto: { ...defaults.auto, ...(saved.auto || {}) },
+    launchpad: {
+      ...defaults.launchpad, ...(saved.launchpad || {}),
+      pads: { ...defaults.launchpad.pads, ...(saved.launchpad?.pads || {}) }
+    }
   };
   // Data versi lama (satu akun X, template global) -> brand utama
   if (!saved.brands) {

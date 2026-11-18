@@ -12,6 +12,9 @@ Bot Telegram yang memantau channel target. Setiap ada post dengan link X project
 - **💬 Channel Telegram** (channel khusus, terpisah dari laporan X): post channel target yang berisi link grup/channel
   Telegram project (`t.me/…`) dikirim ke sini dengan komentar per brand → **📋 Salin** → **💬 Buka grup** → tempel di grup
   pakai akun Telegram sendiri. Lihat [Channel Telegram](#channel-telegram)
+- **🚀 Launchpad** (mati sampai dinyalakan): token baru PumpFun, BonkFun, Raydium LaunchLab, Four.meme, Clanker & Pons
+  diperlakukan seperti post channel target — link X token → channel laporan, link Telegram → Channel Telegram, keduanya →
+  dua-duanya. Lihat [Launchpad](#launchpad)
 - **Link opt-in 1-klik** (`t.me/<bot>?start=optin`, tampil di /menu → Opt-in saat Opt-in publik ON): project klik → kirim username X → pasang kode di bio → komentar otomatis penuh
 - Bot **tidak pernah mem-posting tweet sendiri** — satu-satunya aksi di X adalah komentar ke tweet project opt-in
 - Setiap aksi dilaporkan ke **channel laporan**. Laporan komentar punya tombol **❤️ Like** + **👤 Follow** (1 tekan di Telegram, dikirim dari akun brand). Hanya ADMIN_IDS yang bisa menekan
@@ -51,6 +54,50 @@ Komentar Dexvra: "…"
   atau `/addtgtpl dexvra teks`). Kosong = memakai template komentar X brand itu. Variabel: `{name}` nama grup,
   `{handle}` username grup, `{channel}` channel sumber
 - Bot **tidak pernah menulis di grup orang lain** — komentar ditempel admin sendiri (spam bot di grup = di-ban / akun dibatasi Telegram)
+
+## Launchpad
+
+Token yang baru dibuat di launchpad besar masuk ke alur yang **sama** dengan post channel target (permintaan operator
+18 Nov 2026), jadi formatnya sama persis — komentar per brand, 📋 Salin, 👤 Profil X / 💬 Buka grup, 🚫 Abaikan:
+
+| Token punya | Dilaporkan ke |
+|---|---|
+| link X saja | 📨 Channel laporan ("siap dikomentari") |
+| link Telegram saja | 💬 Channel Telegram |
+| link X dan Telegram | dua-duanya |
+| tidak punya keduanya | dilewati |
+
+```
+💬 @openroboto siap dikomentari
+Sumber: 🚀 LaunchLab · MachineFun · $ROBOT · MC $3.5K
+Komentar Fourtis: "…"
+Komentar Dexvra: "…"
+[📋 Salin · Fourtis] [📋 Salin · Dexvra]
+[👤 Profil X]
+```
+
+- **Nyalakan**: /menu → **🚀 Launchpad** → tombol ON, atau `/launchpad on`. Channel laporan dan/atau Channel Telegram harus
+  sudah diatur. Putaran pertama sesudah ON / bot restart: maks. 3 token terbaru per launchpad (bukan banjir laporan)
+- **Sumber** (`src/launchpad.js`, dicek tiap `pollSec` = 45 detik):
+
+  | Launchpad | Dari mana |
+  |---|---|
+  | PumpFun (Solana) | `frontend-api-v3.pump.fun` — diblokir Cloudflare dari sebagian server; cadangan: DexScreener |
+  | BonkFun / Raydium LaunchLab (Solana) | `launch-mint-v1.raydium.io` (platform letsbonk.fun = BonkFun) |
+  | Four.meme (BSC) | `four.meme/meme-api` — diblokir per wilayah dari sebagian server; cadangan: DexScreener |
+  | Clanker (Base, Robinhood, …) | `clanker.world/api/tokens` |
+  | Pons (Robinhood Chain) | pool baru dari GeckoTerminal + link X/TG dari kontrak token (`getTokenInfo()` lewat RPC Robinhood Chain) |
+  | DexScreener (cadangan) | profil token terbaru beralamat `…pump` / `…bonk` (Solana) atau `…4444` / `…ffff` (BSC) |
+
+  Status tiap sumber (OK / error + kapan) tampil di panel 🚀 Launchpad — kalau PumpFun / Four.meme diblokir dari VPS, terlihat di sana
+- **Tanpa batas market cap** (bawaan). Batasi: tombol 💰 Min. market cap atau `/launchpad mc 10k`; `/launchpad mc 0` = bebas
+- **Tanpa API X** (bawaan): laporan launchpad memakai 📋 Salin + 👤 Profil X walau Mode hemat OFF, supaya volume launchpad tidak
+  menghabiskan kredit X. `/launchpad xapi on` = cari tweet terbaru lewat API X seperti post channel
+- **Tidak dobel**: token yang sama dibaca sekali; akun X / link Telegram yang sama tetap maks. 1 laporan per *Jeda project yang
+  sama* (🔎 Filter, bawaan 7 hari) — banyak token memakai akun X yang sama. Project opt-in tetap dikomentari otomatis
+- **Jarak antar laporan** ±3,5 detik (batas Telegram ±20 pesan/menit per channel); maks. 30 token baru per launchpad per putaran
+- Matikan satu launchpad: tombolnya di panel, atau `/launchpad pumpfun off` (nama: pumpfun, bonkfun, launchlab, fourmeme,
+  clanker, pons, dexscreener). Jumlahnya ikut di `/laporan` (baris 🚀 per launchpad)
 
 ## Multi brand / multi akun
 
@@ -164,6 +211,7 @@ menanyakannya langsung; /batal untuk membatalkan. Ketik **/** untuk daftar perin
 | `/limits` `/limits maxPerHour 15` | minDelaySec, maxDelaySec, maxPerHour, maxPerDay (semua **per akun**) |
 | `/jeda` `/jeda 5` `/jeda 3 6` `/jeda project 10` | Jeda dalam menit: antar semua aksi (tetap / acak) dan antar komentar ke project yang sama |
 | `/auto` `/auto watchOptins false` | watchOptins, watchIntervalMin, maxRepliesPerProjectPerDay, replyGapMin, autoVerify, verifyIntervalMin, pendingExpireDays, catchUpMin, catchUpMaxAgeHours, dailyReportHour, backupKeep |
+| `/launchpad` `/launchpad on\|off` `/launchpad pumpfun off` `/launchpad mc 10k` `/launchpad xapi on` | Token baru launchpad → laporan X / Telegram (lihat [Launchpad](#launchpad)) |
 | `/laporan` | Laporan 24 jam terakhir: total akun X & link Telegram yang di-post channel sumber, per channel sumber |
 | `/pause` `/resume` `/resume brand` `/status` | Kontrol bot (`/resume dexvra` = jalankan lagi satu akun yang kena rem darurat) |
 

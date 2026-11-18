@@ -43,7 +43,8 @@ fs.writeFileSync(DB_FILE, JSON.stringify({
 
 // Hanya BOT_TOKEN + ADMIN_IDS; TG_* sengaja kosong (string kosong supaya .env di server tidak ikut terbaca)
 Object.assign(process.env, {
-  DB_FILE, BOT_TOKEN: '123:test', ADMIN_IDS: String(ADMIN), TG_API_ID: '', TG_API_HASH: '', TG_SESSION: '', TICK_MS: '100', WEB_POLL_MS: '100'
+  DB_FILE, BOT_TOKEN: '123:test', ADMIN_IDS: String(ADMIN), TG_API_ID: '', TG_API_HASH: '', TG_SESSION: '', TICK_MS: '100', WEB_POLL_MS: '100',
+  LP_POLL_MS: '100', LP_GAP_MS: '0'
 });
 
 const sent = () => M.botCalls.filter((c) => c.method === 'sendMessage');
@@ -483,6 +484,124 @@ await test('/cektg: link Telegram yang bot temukan di channel sumber & kenapa di
 });
 
 // ---------- Menu "/" dan panel tombol ----------
+// ---------- Launchpad: token baru → laporan X / Telegram lewat jalur channel target ----------
+const LP = { pump: 'https://frontend-api-v3.pump.fun/', gt: 'https://api.geckoterminal.com/', rpc: 'https://rpc.mainnet.chain.robinhood.com' };
+const pumpCoin = (mint, sym, x, tg, mc = 3000) => ({ mint, name: `${sym} Coin`, symbol: sym, twitter: x, telegram: tg, website: '', usd_market_cap: mc });
+const xReport = (h) => until(() => sent().find((c) => c.payload.chat_id === REPORT && c.payload.text.startsWith(`💬 <b>@${h}</b> siap dikomentari`))?.payload, `laporan X @${h}`);
+// Hasil getTokenInfo() Pons dalam encoding ABI: (address, string logo, string description, (twitter, telegram, discord, website, farcaster))
+const abiStr = (v) => { const b = Buffer.from(v); return b.length.toString(16).padStart(64, '0') + b.toString('hex').padEnd(Math.ceil(b.length / 32) * 64, '0'); };
+function tokenInfoHex(twitter, telegram) {
+  const w = (n) => n.toString(16).padStart(64, '0');
+  const strs = [twitter, telegram, '', '', ''].map(abiStr);
+  let off = 5 * 32;
+  const heads = strs.map((x) => { const h = w(off); off += x.length / 2; return h; });
+  const logo = abiStr('logo'), desc = abiStr('');
+  return '0x' + w(0xabc) + w(0x80) + w(0x80 + logo.length / 2) + w(0x80 + (logo.length + desc.length) / 2) + logo + desc + heads.join('') + strs.join('');
+}
+const PONS_HEX = tokenInfoHex('https://x.com/dacitycoin_gta6', 'https://t.me/DacityCoin_GTA');
+
+await test('Launchpad: link X → channel laporan, link Telegram → channel Telegram, keduanya → dua-duanya; tanpa API X', async () => {
+  db.tgReportChat = TGCH;
+  const autoSnap = { ...db.auto };
+  Object.assign(db.auto, { manualAssist: true, freeMode: false }); // mode API X: launchpad tetap TANPA API X (lite)
+  Object.assign(M.tgPages, { lpbothgrp: { title: 'LP Both Group', extra: '1 234 members' }, lponlytg: { title: 'LP Only TG', extra: '777 subscribers' } });
+  M.launchpad = {
+    [LP.pump]: [ // API: terbaru lebih dulu
+      pumpCoin('L3pump', 'BOTH', 'https://x.com/LpBothX', 'https://t.me/LpBothGrp'),
+      pumpCoin('L2pump', 'TGONLY', '', 'https://t.me/LpOnlyTg'),
+      pumpCoin('L1pump', 'XONLY', 'https://twitter.com/LpOnlyX?s=20', ''),
+      pumpCoin('L0pump', 'NONE', '', '')
+    ]
+  };
+  for (const pad of ['bonkfun', 'launchlab', 'fourmeme', 'clanker', 'pons', 'dexscreener']) await dm(ADMIN, `/launchpad ${pad} off`);
+  assert.ok(dataOf(await tap(ADMIN, 'm:home')).includes('m:lp'));
+  let p = await tap(ADMIN, 'm:lp');
+  assert.match(p.text, /^🚀 <b>Launchpad<\/b>\n/);
+  assert.match(p.text, /Status: <b>❌ OFF<\/b>/);
+  assert.match(p.text, /Min\. market cap: tanpa batas/);
+  const xBefore = xcalls('userByUsername').length + xcalls('userTimeline').length;
+  const tgBefore = tgReports().length;
+
+  await dm(ADMIN, '/launchpad on');
+  const onlyX = await xReport('lponlyx');
+  const both = await xReport('lpbothx');
+  assert.match(onlyX.text, /\nSumber: 🚀 PumpFun · \$XONLY · MC \$3\.0K\nKomentar Fourtis: "/);
+  assert.deepEqual(onlyX.reply_markup.inline_keyboard.flat().map((b) => b.text), ['📋 Salin', '👤 Profil X']);
+  assert.equal(onlyX.reply_markup.inline_keyboard[1][0].url, 'https://x.com/lponlyx');
+  const bothTg = await tgReportFor('@LpBothGrp');
+  assert.match(bothTg.text, /^💬 <b>@LpBothGrp<\/b> siap dikomentari\n👥 Grup · LP Both Group · 1 234 anggota\nSumber: 🚀 PumpFun · \$BOTH · MC \$3\.0K\n/);
+  assert.match((await tgReportFor('@LpOnlyTg')).text, /\n📢 Channel · LP Only TG · 777 subscriber\nSumber: 🚀 PumpFun · \$TGONLY/);
+  await sleep(300);
+  const xs = sent().filter((c) => c.payload.chat_id === REPORT && /@lp\w+<\/b> siap dikomentari/.test(c.payload.text)).map((c) => c.payload.text);
+  assert.equal(xs.length, 2, xs.join('\n---\n'));
+  assert.ok(xs[0].includes('@lponlyx') && xs[1].includes('@lpbothx'), 'yang paling lama dilaporkan dulu');
+  assert.equal(tgReports().length - tgBefore, 2);
+  assert.ok(!tgReports().some((t) => /lponlyx/i.test(t)) && !xs.some((t) => /lponlytg/i.test(t)), 'X dan Telegram tidak tertukar');
+  assert.ok(!sent().some((c) => c.payload.text.includes('NONE')), 'token tanpa link X / Telegram dilewati');
+  assert.equal(xcalls('userByUsername').length + xcalls('userTimeline').length, xBefore, 'launchpad tidak memakai kredit API X');
+  Object.assign(db.auto, autoSnap);
+});
+
+await test('Launchpad: token yang sama tidak dobel; X / TG yang sama tunduk jeda project; min. MC; Pons dari blockchain; OFF', async () => {
+  db.tgReportChat = TGCH;
+  const autoSnap = { ...db.auto };
+  db.auto.manualAssist = true; // laporan X "siap dikomentari" (bawaan di server)
+  const count = () => sent().filter((c) => [REPORT, TGCH].includes(c.payload.chat_id) && c.payload.text.includes('🚀')).length;
+  const n0 = count();
+  await sleep(400);
+  assert.equal(count(), n0, 'putaran berikutnya: token yang sudah dibaca tidak dilaporkan lagi');
+
+  // Token baru dengan akun X yang sama (jeda project) + grup Telegram baru → hanya Telegram
+  M.tgPages.lpnewgrp = { title: 'LP New Group', extra: '50 members' };
+  M.launchpad[LP.pump] = [pumpCoin('L5pump', 'AGAIN', 'https://x.com/LpOnlyX', 'https://t.me/LpNewGrp'), ...M.launchpad[LP.pump]];
+  assert.match((await tgReportFor('@LpNewGrp')).text, /Sumber: 🚀 PumpFun · \$AGAIN/);
+  await sleep(300);
+  assert.equal(sent().filter((c) => c.payload.chat_id === REPORT && c.payload.text.includes('@lponlyx')).length, 1);
+
+  // Min. market cap (bawaan tanpa batas)
+  assert.match(await dm(ADMIN, '/launchpad mc 10k'), /Min\. market cap: \$10,000/);
+  M.launchpad[LP.pump] = [pumpCoin('L7pump', 'BIG', 'https://x.com/LpBig', '', 50000), pumpCoin('L6pump', 'SMALL', 'https://x.com/LpSmall', '', 900),
+    ...M.launchpad[LP.pump]];
+  await xReport('lpbig');
+  await sleep(300);
+  assert.ok(!reports().some((r) => r.includes('@lpsmall')));
+  await dm(ADMIN, '/launchpad mc 0');
+  assert.equal(db.launchpad.minMc, 0);
+
+  // Pons: pool baru di GeckoTerminal, link X / TG dibaca dari kontrak token lewat RPC Robinhood Chain
+  M.tgPages.dacitycoin_gta = { title: 'Dacity', extra: '88 members' };
+  M.launchpad[LP.gt] = { data: [{ id: 'robinhood_0xpool', type: 'pool', attributes: { address: '0xpool', name: 'GATO / TTWO', fdv_usd: '4900.5' },
+    relationships: { base_token: { data: { id: 'robinhood_0xd36a', type: 'token' } }, dex: { data: { id: 'pons-v2', type: 'dex' } } } }],
+  included: [{ id: 'robinhood_0xd36a', type: 'token', attributes: { name: 'GTA6 Cat Mascot', symbol: 'GATO' } }] };
+  M.launchpad[LP.rpc] = (url, init) => ({ jsonrpc: '2.0', id: 1, result: JSON.parse(init.body).params[0].to === '0xd36a' ? PONS_HEX : '0x' });
+  await dm(ADMIN, '/launchpad pons on');
+  assert.match((await xReport('dacitycoin_gta6')).text, /Sumber: 🚀 Pons \(Robinhood\) · \$GATO · MC \$4\.9K/);
+  await tgReportFor('@DacityCoin_GTA');
+
+  // Panel: status per launchpad + hitungan
+  const p = await tap(ADMIN, 'm:lp');
+  assert.match(p.text, /Status: <b>🟢 ON<\/b>/);
+  assert.match(p.text, /✅ PumpFun — OK \d+ dtk lalu · X \d+ \/ TG \d+/);
+  assert.match(p.text, /❌ Four\.meme — mati/);
+  assert.match(await dm(ADMIN, '/status'), /Launchpad: ON \(2\/7 sumber\)/);
+  assert.match(await dm(ADMIN, '/laporan'), /• 🚀 PumpFun: \d+/);
+
+  // Sumber error → terlihat di panel, sumber lain tetap jalan
+  M.launchpad[LP.gt] = { httpStatus: 429, text: 'Too Many Requests' };
+  await sleep(300);
+  assert.match((await tap(ADMIN, 'm:lp')).text, /✅ Pons — ⚠️ HTTP 429/);
+
+  // OFF: token baru tidak dilaporkan
+  await dm(ADMIN, '/launchpad off');
+  M.launchpad[LP.pump] = [pumpCoin('L8pump', 'LATE', 'https://x.com/LpLate', ''), ...M.launchpad[LP.pump]];
+  await sleep(400);
+  assert.ok(!reports().some((r) => r.includes('@lplate')));
+  assert.match(await dm(ADMIN, '/launchpad salah'), /Pemakaian:/);
+  M.launchpad = {};
+  for (const pad of ['bonkfun', 'launchlab', 'fourmeme', 'clanker', 'dexscreener']) db.launchpad.pads[pad] = true;
+  Object.assign(db.auto, autoSnap);
+});
+
 await test('menu "/" terdaftar: publik untuk project, lengkap untuk admin', async () => {
   const calls = M.botCalls.filter((c) => c.method === 'setMyCommands');
   const adm = calls.find((c) => c.payload.scope?.chat_id === ADMIN);
@@ -798,7 +917,7 @@ await test('setiap perintah admin membalas tanpa error', async () => {
     '/addchannel @tourch', '/delchannel @tourch', '/addchannel', '/addchannel @x nobrand',
     '/pause', '/resume', '/resume dexvra', '/resume nobrand',
     '/delaccount', '/delaccount nobrand', '/setx', '/addaccount', '/addaccount dexvra bad b c d',
-    '/optin', '/verify', '/optout', '/batal', '/start'
+    '/optin', '/verify', '/optout', '/batal', '/start', '/launchpad', '/launchpad xyz'
   ];
   const silent = [];
   for (const c of cmds) {
@@ -849,7 +968,7 @@ await test('Channel laporan lewat tombol: ID dicek dulu dengan pesan tes; ID sal
 
 await test('telusuri SEMUA tombol panel: tiap tombol merespons tanpa error', async () => {
   const snap = JSON.stringify({ filter: db.filter, limits: db.limits, auto: db.auto, paused: db.paused, brands: db.brands,
-    tgReportChat: db.tgReportChat, tgIgnore: db.tgIgnore });
+    tgReportChat: db.tgReportChat, tgIgnore: db.tgIgnore, launchpad: db.launchpad });
   const skip = /^m:(accdelok|chdel|tdel|optadd):/; // aksi hapus/tambah diuji terpisah
   const seen = new Set(), queue = ['m:home'], noAnswer = [], noPanel = [];
   while (queue.length && seen.size < 300) {
